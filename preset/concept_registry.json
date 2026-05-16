@@ -1,0 +1,14 @@
+{
+  "concepts/01_meta_pixel_preset_guide.txt": 103190,
+  "concepts/02_browser_oauth_local_pattern.txt": 103191,
+  "concepts/03_meta_graph_api_pattern.txt": 103192,
+  "concepts/04_site_cms_detection_patterns.txt": 103193,
+  "concepts/05_meta_pixel_events_config.txt": 103194,
+  "concepts/06_gtm_api_install_pattern.txt": 103195,
+  "concepts/07_wordpress_pixel_install_pattern.txt": 103196,
+  "concepts/08_shopify_pixel_install_pattern.txt": 103197,
+  "concepts/09_ftp_pixel_install_pattern.txt": 103198,
+  "concepts/10_manual_install_fallback.txt": 103199,
+  "concepts/11_meta_pixel_verify_pattern.txt": 103200,
+  "concepts/12_meta_developer_app_onboarding.txt": 103201
+}

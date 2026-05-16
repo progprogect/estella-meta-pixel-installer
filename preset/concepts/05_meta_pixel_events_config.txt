@@ -1,0 +1,85 @@
+## Meta Pixel Events Configuration
+
+### Standard Events for Landing Pages
+
+**PageView** — fires automatically when pixel script loads. No extra code needed.
+
+**Lead** — fires when user submits a contact/registration form.
+```javascript
+// Place on form submit button or form submit event handler
+fbq('track', 'Lead');
+```
+
+**Purchase** — fires on confirmation/thank-you page after transaction.
+```javascript
+// Place on purchase confirmation page
+fbq('track', 'Purchase', {
+    value: 0.00,
+    currency: 'USD'
+});
+```
+
+### Full Pixel Code Template (with PageView auto-fire)
+```html
+<!-- Meta Pixel Code — installed by Extella Meta Pixel Installer -->
+<script>
+!function(f,b,e,v,n,t,s){if(f.fbq)return;n=f.fbq=function(){n.callMethod?
+n.callMethod.apply(n,arguments):n.queue.push(arguments)};if(!f._fbq)f._fbq=n;
+n.push=n;n.loaded=!0;n.version='2.0';n.queue=[];t=b.createElement(e);t.async=!0;
+t.src=v;s=b.getElementsByTagName(e)[0];s.parentNode.insertBefore(t,s)}(window,
+document,'script','https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', 'PIXEL_ID');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none"
+src="https://www.facebook.com/tr?id=PIXEL_ID&ev=PageView&noscript=1"/></noscript>
+<!-- End Meta Pixel Code -->
+```
+
+### Auto-Tracking Lead Event (add after pixel init)
+```html
+<script>
+// Auto-track all form submissions as Lead events
+document.addEventListener('DOMContentLoaded', function() {
+    document.querySelectorAll('form').forEach(function(form) {
+        form.addEventListener('submit', function() {
+            fbq('track', 'Lead');
+        });
+    });
+});
+</script>
+```
+
+### Conversions API (CAPI) Event Format
+Used for server-side event verification and redundancy.
+```json
+{
+  "data": [{
+    "event_name": "PageView",
+    "event_time": 1715000000,
+    "action_source": "website",
+    "event_source_url": "https://example.com",
+    "user_data": {
+      "client_ip_address": "1.2.3.4",
+      "client_user_agent": "Mozilla/5.0"
+    }
+  }]
+}
+```
+Endpoint: POST https://graph.facebook.com/v25.0/{pixel_id}/events?access_token={token}
+
+### Event Names Reference
+Standard events: PageView, ViewContent, Search, AddToCart, AddToWishlist, InitiateCheckout, AddPaymentInfo, Purchase, Lead, CompleteRegistration, Contact, CustomizeProduct, Donate, FindLocation, Schedule, StartTrial, SubmitApplication, Subscribe
+
+### Event Quality
+- EventMatch Quality: percentage of events matched to Facebook users
+- Test events appear in Events Manager > Test Events tab when test_event_code is set
+- Remove test_event_code before production to avoid polluting test data
+
+### Where to Place Pixel Code
+- Put pixel snippet in <head> section of every page
+- Lead event: on form submit handlers
+- Purchase event: only on thank-you/confirmation pages
+- For WordPress: in theme's header.php, inside <head> tags
+- For Shopify: theme.liquid, inside <head> section
+- For Wix/Tilda: Site Settings > Custom Code > Head section

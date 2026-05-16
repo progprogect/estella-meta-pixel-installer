@@ -1,0 +1,138 @@
+## Browser Cookie Check + Local OAuth Flow Pattern (Meta / Facebook)
+
+### Purpose
+Automatically obtain a Meta (Facebook) Marketing API access token from the user's local browser without requiring manual copy-paste. Combines cookie detection (is user logged in?) with a local OAuth callback server.
+
+### Libraries Required
+- `pycookiecheat` (pip: pycookiecheat) — reads decrypted cookies from Chrome, Firefox, Safari, Brave, Edge
+- `installed_browsers` (pip: installed-browsers) — detects default browser name
+- `requests` (pip: requests) — HTTP calls
+
+### Step 1: Detect Default Browser
+```python
+import installed_browsers
+default = installed_browsers.what_is_the_default_browser()
+# Returns e.g.: "Google Chrome", "Mozilla Firefox", "Safari", "Brave Browser", "Microsoft Edge"
+```
+
+### Step 2: Map Browser Name to pycookiecheat BrowserType
+```python
+from pycookiecheat import BrowserType, get_cookies
+BROWSER_MAP = {
+    "Google Chrome": BrowserType.CHROME,
+    "Chrome": BrowserType.CHROME,
+    "Mozilla Firefox": BrowserType.FIREFOX,
+    "Firefox": BrowserType.FIREFOX,
+    "Safari": BrowserType.SAFARI,
+    "Brave Browser": BrowserType.BRAVE,
+    "Brave": BrowserType.BRAVE,
+    "Microsoft Edge": BrowserType.EDGE,
+    "Edge": BrowserType.EDGE,
+}
+browser_type = BROWSER_MAP.get(default, BrowserType.CHROME)
+```
+
+### Step 3: Read Facebook Cookies
+```python
+cookies = get_cookies("https://www.facebook.com", browser=browser_type)
+is_logged_in = "c_user" in cookies and bool(cookies["c_user"])
+```
+
+IMPORTANT — macOS privacy: Chrome may require Full Disk Access. If get_cookies raises PermissionError, try Firefox next (no Full Disk Access needed). Order of fallback: default browser → Firefox → Safari.
+
+### Step 4: Local OAuth Callback Server (stdlib only, no Flask)
+```python
+import http.server, threading, urllib.parse, time
+
+class _OAuthHandler(http.server.BaseHTTPRequestHandler):
+    result = {}
+    def do_GET(self):
+        parsed = urllib.parse.urlparse(self.path)
+        if "/callback" in parsed.path:
+            params = urllib.parse.parse_qs(parsed.query)
+            _OAuthHandler.result["code"] = params.get("code", [None])[0]
+            _OAuthHandler.result["error"] = params.get("error", [None])[0]
+            body = b"<html><body style='font-family:sans-serif;text-align:center;padding:50px'><h2>Done!</h2><p>You can close this tab and return to the chat.</p></body></html>"
+            self.send_response(200)
+            self.send_header("Content-Type", "text/html")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+            threading.Thread(target=self.server.shutdown, daemon=True).start()
+    def log_message(self, *a): pass
+
+server = http.server.HTTPServer(("127.0.0.1", 8891), _OAuthHandler)
+t = threading.Thread(target=server.serve_forever, daemon=True)
+t.start()
+```
+
+### Step 5: Generate OAuth URL and Open Browser
+```python
+import urllib.parse, subprocess, platform
+
+params = {
+    "client_id": meta_app_id,
+    "redirect_uri": "http://localhost:8891/callback",
+    "scope": "ads_management,ads_read,business_management",
+    "response_type": "code",
+    "state": "extella_pixel_installer"
+}
+oauth_url = "https://www.facebook.com/dialog/oauth?" + urllib.parse.urlencode(params)
+
+if platform.system() == "Darwin":
+    subprocess.run(["open", oauth_url])
+elif platform.system() == "Windows":
+    subprocess.run(["start", oauth_url], shell=True)
+else:
+    subprocess.run(["xdg-open", oauth_url])
+```
+
+### Step 6: Wait for OAuth Code (timeout 120s)
+```python
+deadline = time.time() + 120
+while time.time() < deadline:
+    if _OAuthHandler.result.get("code") or _OAuthHandler.result.get("error"):
+        break
+    time.sleep(1)
+
+code = _OAuthHandler.result.get("code")
+if not code:
+    return {"status": "error", "message": "OAuth timeout or denied"}
+```
+
+### Step 7: Exchange Code for Long-Lived Token
+```python
+# Short-lived token
+resp = requests.get("https://graph.facebook.com/v25.0/oauth/access_token", params={
+    "client_id": meta_app_id,
+    "client_secret": meta_app_secret,
+    "redirect_uri": "http://localhost:8891/callback",
+    "code": code
+})
+short_token = resp.json()["access_token"]
+
+# Exchange for long-lived token (60 days)
+resp2 = requests.get("https://graph.facebook.com/v25.0/oauth/access_token", params={
+    "grant_type": "fb_exchange_token",
+    "client_id": meta_app_id,
+    "client_secret": meta_app_secret,
+    "fb_exchange_token": short_token
+})
+long_token = resp2.json()["access_token"]
+```
+
+### Step 8: Get Ad Accounts
+```python
+resp = requests.get("https://graph.facebook.com/v25.0/me/adaccounts", params={
+    "fields": "id,name,account_status",
+    "access_token": long_token
+})
+ad_accounts = resp.json().get("data", [])
+```
+
+### Important Notes
+- Facebook App must have redirect_uri http://localhost:8891/callback whitelisted
+- Required scopes: ads_management, ads_read, business_management
+- Long-lived token expires in 60 days; save to KV Store key "meta_access_token"
+- If c_user cookie not found: user is not logged into Facebook in the browser → ask them to log in first
+- Port 8891 conflict: try 8892, 8893 if bind fails

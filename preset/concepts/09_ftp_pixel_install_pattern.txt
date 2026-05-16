@@ -1,0 +1,129 @@
+## FTP / SFTP Pixel Installation Pattern
+
+### Purpose
+Inject Meta Pixel code into an HTML file via FTP. Used for custom HTML sites, WordPress (header.php), and any site accessible via FTP.
+
+### Library
+Python standard library `ftplib` for FTP. For SFTP, use `paramiko`.
+
+### FTP Connection and File Injection
+```python
+import ftplib, io
+
+def ftp_inject_pixel(ftp_host, ftp_user, ftp_pass, file_path, pixel_code,
+                     ftp_port=21, timeout=30):
+    """
+    Download HTML/PHP file via FTP, inject pixel after <head>, re-upload.
+    file_path: FTP path to the file (e.g. /public_html/index.html)
+    Returns: {status, path, backup_created}
+    """
+    try:
+        ftp = ftplib.FTP()
+        ftp.connect(ftp_host, ftp_port, timeout=timeout)
+        ftp.login(ftp_user, ftp_pass)
+    except Exception as e:
+        return {"status": "error", "message": f"FTP connection failed: {e}"}
+
+    try:
+        # Download original file
+        buf = io.BytesIO()
+        ftp.retrbinary(f"RETR {file_path}", buf.write)
+        original = buf.getvalue().decode("utf-8", errors="replace")
+
+        # Check if pixel already installed
+        if "<!-- Meta Pixel Code" in original or "fbevents.js" in original:
+            ftp.quit()
+            return {"status": "already_installed", "path": file_path,
+                    "message": "Meta Pixel code already detected in file"}
+
+        # Try injection points in order of preference
+        injection_candidates = [
+            ("<head>", "<head>\n"),
+            ("<HEAD>", "<HEAD>\n"),
+            ("</title>", "</title>\n"),
+        ]
+        new_content = None
+        for marker, replacement_prefix in injection_candidates:
+            if marker in original:
+                new_content = original.replace(
+                    marker, replacement_prefix + pixel_code + "\n", 1)
+                break
+
+        if new_content is None:
+            # Last resort: inject before </body>
+            if "</body>" in original.lower():
+                new_content = original.replace(
+                    "</body>", pixel_code + "\n</body>", 1)
+            else:
+                ftp.quit()
+                return {"status": "error",
+                        "message": "Could not find injection point in HTML"}
+
+        # Upload modified file
+        upload_buf = io.BytesIO(new_content.encode("utf-8"))
+        ftp.storbinary(f"STOR {file_path}", upload_buf)
+        ftp.quit()
+        return {"status": "success", "path": file_path}
+
+    except Exception as e:
+        try: ftp.quit()
+        except: pass
+        return {"status": "error", "message": f"File operation failed: {e}"}
+```
+
+### Auto-Detection of Main HTML File
+```python
+def find_main_html(ftp, base_paths=None):
+    """Try common file paths to find the main HTML file."""
+    candidates = [
+        "/public_html/index.html",
+        "/public_html/index.php",
+        "/www/index.html",
+        "/www/index.php",
+        "/httpdocs/index.html",
+        "/index.html",
+        "/index.php",
+    ]
+    for path in candidates:
+        try:
+            ftp.size(path)
+            return path
+        except: pass
+    return None
+```
+
+### SFTP via Paramiko (for servers that don't support FTP)
+```python
+import paramiko, io
+
+ssh = paramiko.SSHClient()
+ssh.set_missing_host_key_policy(paramiko.AutoAddPolicy())
+ssh.connect(hostname=host, username=user, password=password, port=22, timeout=30)
+sftp = ssh.open_sftp()
+
+# Read file
+with sftp.open(file_path, 'r') as f:
+    content = f.read().decode('utf-8')
+
+# Modify and write back
+new_content = content.replace("<head>", "<head>\n" + pixel_code + "\n", 1)
+with sftp.open(file_path, 'w') as f:
+    f.write(new_content)
+
+sftp.close()
+ssh.close()
+```
+
+### Common FTP Root Directories by Hosting
+| Hosting | Root Path |
+|---|---|
+| cPanel / shared | /public_html/ |
+| Plesk | /httpdocs/ |
+| DirectAdmin | /domains/{domain}/public_html/ |
+| Generic VPS | / or /var/www/html/ |
+| ISPmanager | /var/www/{user}/data/www/{domain}/ |
+
+### Security Notes
+- Never store FTP passwords in concepts or expert code — pass as kwargs, store in KV Store
+- Use passive FTP mode (ftp.set_pasv(True)) for firewalled servers
+- Validate injection result by downloading and checking the file after upload

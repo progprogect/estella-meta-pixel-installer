@@ -1,0 +1,70 @@
+## Meta Developer App Onboarding (Facebook App for OAuth)
+
+### Purpose
+The Meta Pixel Installer preset uses the Facebook Login (OAuth) flow to obtain a Marketing API access token. That flow requires a **Meta (Facebook) App**: an **App ID** and **App Secret** stored in the Extella KV Store as `meta_app_id` and `meta_app_secret`.
+
+Meta does **not** provide a supported public API to create Developer apps using only a web session cookie. Creating an app is done in the **Meta for Developers** website. This concept describes the assisted path: the user creates the app manually once; the preset validates credentials and saves them to KV.
+
+### Corporate / Google Workspace note
+Meta for Developers is tied to a **Meta (Facebook) account**, not to Google directly. Use a corporate email allowed by your IT policy to create or access the Meta account that owns the ad account and the Developer app.
+
+### Step 1 — Log in to Meta
+1. Open https://www.facebook.com/ and ensure you are logged in (same identity you use for Business / Ads).
+2. Open https://developers.facebook.com/ in the same browser if possible.
+
+### Step 2 — Create an app
+1. Go to **My Apps** → **Create App**.
+2. Choose a use case that supports **Business** / **Marketing API** / **Manage ads** (Meta changes labels over time; pick the option that allows advertising and Marketing API access for your scenario).
+3. Set **App name** and **contact email**, complete the wizard.
+
+### Step 3 — App ID and App Secret
+1. In the app dashboard: **Settings** → **Basic**.
+2. Copy **App ID** (numeric string).
+3. Click **Show** next to **App Secret** and copy it. Never paste the secret into public chats; use KV or the local onboarding expert parameters only in a private run.
+
+### Step 4 — Valid OAuth Redirect URIs (required)
+The preset’s local OAuth expert (`meta_token_from_browser`) starts a small HTTP server and uses **localhost** in the redirect URL sent to Meta. You must add **every** URI below under **Facebook Login for Business** (or **Facebook Login** / OAuth settings, depending on app type) → **Valid OAuth Redirect URIs**:
+
+```
+http://localhost:8891/callback
+http://localhost:8892/callback
+http://localhost:8893/callback
+http://localhost:8894/callback
+http://localhost:8895/callback
+http://127.0.0.1:8891/callback
+http://127.0.0.1:8892/callback
+http://127.0.0.1:8893/callback
+http://127.0.0.1:8894/callback
+http://127.0.0.1:8895/callback
+```
+
+Why two hosts? The browser may resolve `localhost` differently from `127.0.0.1`; Meta requires an **exact** match. The expert may pick any free port in this range.
+
+### Step 5 — Scopes used by this preset
+The OAuth dialog requests:
+
+- `ads_management`
+- `ads_read`
+- `business_management`
+
+Ensure your app type and **App Review** / **Development** mode allow these permissions for the users who will authorize (yourself in dev mode is typical for internal use).
+
+### Step 6 — Save to Extella KV (recommended path)
+Run the local expert **`meta_app_onboarding_assistant`** on the user device (`target` = `extella_device_uuid` from KV) with:
+
+- `api_token` — Extella API token
+- `meta_app_id` and `meta_app_secret` — after you create the app (optional on first run; if omitted, the expert returns links and the redirect URI block only)
+- `open_browser` — `true` to open Meta for Developers in the default browser
+
+On success, the expert validates the app via Graph API (`app_id|app_secret`) and writes `meta_app_id` / `meta_app_secret` to KV.
+
+### Step 7 — Continue the preset
+After KV contains `meta_app_id` and `meta_app_secret`, run **`meta_token_from_browser`** (local) to complete OAuth and obtain `meta_access_token`.
+
+### Automation disclaimer
+Fully automating Meta’s Developer UI (headless browser clicking through app creation) is **not** part of this preset: it breaks easily (2FA, CAPTCHA, UI changes) and may conflict with Meta or corporate policies. Optional Playwright-style automation, if ever added, must be a separate experimental flag and explicit user consent.
+
+### Useful links
+- https://developers.facebook.com/apps/
+- https://developers.facebook.com/docs/facebook-login/
+- https://developers.facebook.com/docs/marketing-api/

@@ -1,0 +1,106 @@
+## WordPress Meta Pixel Installation Pattern
+
+### Available Methods (in priority order)
+1. WP REST API → get active theme info → FTP to inject into header.php
+2. FTP direct → find header.php automatically → inject pixel
+3. Manual mode → provide code + specific file path
+
+### Method 1: WP REST API + FTP
+
+**Step 1: Verify WP REST API access**
+```python
+import requests
+resp = requests.get(f"{wp_url}/wp-json/wp/v2/", timeout=15)
+# 200 OK → REST API available
+```
+
+**Step 2: Get active theme name via REST API**
+```python
+# Requires Application Password auth (WP 5.6+)
+from requests.auth import HTTPBasicAuth
+auth = HTTPBasicAuth(wp_username, wp_app_password)
+resp = requests.get(f"{wp_url}/wp-json/wp/v2/themes",
+    params={"status": "active"}, auth=auth, timeout=15)
+active_theme = resp.json()[0]["stylesheet"]  # e.g. "twentytwentyfour"
+```
+
+Application Passwords: WP Admin → Users → Profile → Application Passwords → Add New
+
+**Step 3: FTP to theme header.php**
+```python
+import ftplib, io
+
+def inject_pixel_wp(ftp_host, ftp_user, ftp_pass, theme_name, pixel_code):
+    ftp = ftplib.FTP()
+    ftp.connect(ftp_host, 21, timeout=30)
+    ftp.login(ftp_user, ftp_pass)
+
+    # Common WP paths
+    paths_to_try = [
+        f"/wp-content/themes/{theme_name}/header.php",
+        f"/public_html/wp-content/themes/{theme_name}/header.php",
+        f"/www/wp-content/themes/{theme_name}/header.php",
+        f"/httpdocs/wp-content/themes/{theme_name}/header.php",
+    ]
+
+    target_path = None
+    for path in paths_to_try:
+        try:
+            ftp.size(path)  # check file exists
+            target_path = path
+            break
+        except: pass
+
+    if not target_path:
+        ftp.quit()
+        return {"status": "error", "message": "header.php not found"}
+
+    # Download
+    buf = io.BytesIO()
+    ftp.retrbinary(f"RETR {target_path}", buf.write)
+    content = buf.getvalue().decode("utf-8", errors="replace")
+
+    # Inject after <head> tag
+    if "<!-- Meta Pixel Code" in content:
+        return {"status": "already_installed", "path": target_path}
+
+    inject_after = "<head>"
+    if inject_after not in content:
+        inject_after = "<?php wp_head(); ?>"
+
+    new_content = content.replace(inject_after,
+        inject_after + "\n" + pixel_code + "\n", 1)
+
+    # Upload
+    upload_buf = io.BytesIO(new_content.encode("utf-8"))
+    ftp.storbinary(f"STOR {target_path}", upload_buf)
+    ftp.quit()
+    return {"status": "success", "path": target_path}
+```
+
+### Method 2: FTP Only (no WP REST API)
+Same as above but without getting theme name from REST API. Try to detect theme by scanning FTP directory listing:
+```python
+ftp.cwd("/wp-content/themes/")  # or /public_html/wp-content/themes/
+themes = ftp.nlst()  # list theme directories
+# Skip: twentytwenty*, _default → use first custom theme or first available
+```
+
+### Manual Mode Fallback
+Provide user with:
+1. The pixel code (from meta_pixel_generate_code)
+2. File to edit: `wp-content/themes/{theme_name}/header.php`
+3. Where to paste: after `<head>` tag or before `<?php wp_head(); ?>`
+4. Alternative: WP Admin → Appearance → Theme Editor → header.php
+
+### WP REST API Endpoint Reference
+- GET /wp-json/wp/v2/ — site info, no auth
+- GET /wp-json/wp/v2/themes?status=active — active theme (requires auth)
+- GET /wp-json/wp/v2/users/me — current user info (auth check)
+
+### Common WP FTP Root Paths
+- /public_html/ — most shared hosting (cPanel)
+- /www/ — some hosting providers
+- /httpdocs/ — Plesk default
+- / — some VPS setups
+- /home/{username}/public_html/ — cPanel VPS

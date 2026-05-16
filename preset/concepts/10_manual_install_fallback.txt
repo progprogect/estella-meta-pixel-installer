@@ -1,0 +1,91 @@
+## Manual Pixel Installation — Platform-Specific Instructions
+
+### When to Use Manual Mode
+- CMS is Wix, Tilda, or unrecognized
+- No FTP/API credentials provided
+- Auto-install failed (provide code + guide)
+
+### Platform Instructions
+
+---
+
+**Wix**
+1. Go to your Wix website editor
+2. Click on your site name → Settings
+3. Select "Custom Code" from the left menu
+4. Click "+ Add Code"
+5. Paste the pixel code in the "Head" section
+6. Set "Add Code to Pages" → All Pages
+7. Click Apply
+
+---
+
+**Tilda**
+1. Open your Tilda project
+2. Go to Site Settings (gear icon)
+3. Select "SEO" or "Analytics"
+4. Find "Custom code in head section (all pages)"
+5. Paste the pixel code
+6. Save and Re-publish your site
+
+---
+
+**WordPress (no FTP)**
+Option A — Theme Editor:
+1. WP Admin → Appearance → Theme Editor
+2. Select "Theme Header (header.php)" on the right
+3. Find the <head> opening tag
+4. Paste pixel code immediately after <head>
+5. Click "Update File"
+
+Option B — Plugin (recommended):
+1. Install plugin "Head & Footer Code" (free, wordpress.org)
+2. Go to Settings → Head & Footer Code
+3. Paste pixel code in "HEAD" section
+4. Save
+
+---
+
+**Shopify (no API token)**
+1. Shopify Admin → Online Store → Themes
+2. Click "..." next to your active theme → Edit code
+3. Open Layout → theme.liquid
+4. Find <head> tag
+5. Paste pixel code immediately after <head>
+6. Save
+
+---
+
+**Custom HTML**
+1. Open your HTML file in any text editor
+2. Find the <head> opening tag
+3. Paste pixel code on the next line after <head>
+4. Save and upload the file to your server
+
+---
+
+**Any Platform — Quick Test**
+After installation, visit your website and check:
+1. Open browser DevTools → Network tab
+2. Search for "facebook.com/tr"
+3. You should see a request with your Pixel ID
+OR:
+1. Install "Meta Pixel Helper" Chrome extension
+2. Visit your site — the extension shows active pixels
+
+### Pixel Code Format
+Always use the standard format:
+```html
+<!-- Meta Pixel Code -->
+<script>
+!function(f,b,e,v,n,t,s){...}(window,document,'script','https://connect.facebook.net/en_US/fbevents.js');
+fbq('init', 'YOUR_PIXEL_ID');
+fbq('track', 'PageView');
+</script>
+<noscript><img height="1" width="1" style="display:none" src="https://www.facebook.com/tr?id=YOUR_PIXEL_ID&ev=PageView&noscript=1"/></noscript>
+<!-- End Meta Pixel Code -->
+```
+
+### Verification Link
+After manual installation, check the pixel in:
+https://business.facebook.com/events_manager2/list/pixel/{pixel_id}

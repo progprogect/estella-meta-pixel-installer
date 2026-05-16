@@ -1,0 +1,113 @@
+## Google Tag Manager API v2 — Pixel Installation Pattern
+
+### Overview
+GTM API v2 allows programmatic creation of tags, triggers, and version publishing.
+Auth: Google service account with Tag Manager API scope OR user OAuth.
+
+### Required Google Cloud Setup
+1. Enable Tag Manager API in Google Cloud Console
+2. Create service account → download JSON key
+3. Grant service account "Publish" permission in GTM container settings
+
+### Authentication via Service Account (Python)
+```python
+import json, time, requests
+import google.auth
+from google.oauth2 import service_account
+from google.auth.transport.requests import Request
+
+SCOPES = [
+    "https://www.googleapis.com/auth/tagmanager.edit.containers",
+    "https://www.googleapis.com/auth/tagmanager.publish"
+]
+
+def get_gtm_token(service_account_json_str):
+    sa_info = json.loads(service_account_json_str)
+    creds = service_account.Credentials.from_service_account_info(sa_info, scopes=SCOPES)
+    creds.refresh(Request())
+    return creds.token
+```
+
+### GTM API Base URL
+https://tagmanager.googleapis.com/tagmanager/v2
+
+### Get Accounts and Containers
+```
+GET /accounts
+GET /accounts/{accountId}/containers
+```
+Returns list of containers. GTM Container ID (GTM-XXXXX) maps to container.publicId.
+
+### Get Workspace (use default workspace "1")
+```
+GET /accounts/{accountId}/containers/{containerId}/workspaces
+```
+
+### Create Custom HTML Tag with Meta Pixel
+```python
+tag_body = {
+    "name": "Meta Pixel - Extella",
+    "type": "html",
+    "parameter": [
+        {
+            "type": "template",
+            "key": "html",
+            "value": pixel_code_html  # full pixel <script> code
+        },
+        {
+            "type": "boolean",
+            "key": "supportDocumentWrite",
+            "value": "false"
+        }
+    ],
+    "firingTriggerId": [trigger_id]  # filled after creating trigger
+}
+
+resp = requests.post(
+    f"https://tagmanager.googleapis.com/tagmanager/v2/accounts/{account_id}/containers/{container_id}/workspaces/{workspace_id}/tags",
+    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    json=tag_body, timeout=30
+)
+```
+
+### Create "All Pages" Trigger
+```python
+trigger_body = {
+    "name": "All Pages - Extella",
+    "type": "PAGEVIEW"
+}
+resp = requests.post(
+    f".../workspaces/{workspace_id}/triggers",
+    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    json=trigger_body, timeout=30
+)
+trigger_id = resp.json()["triggerId"]
+```
+
+### Create Version and Publish
+```python
+# Create version
+version_body = {"name": "Meta Pixel installed by Extella", "notes": "Auto-installed"}
+resp = requests.post(f".../workspaces/{workspace_id}:create_version",
+    headers={"Authorization": f"Bearer {access_token}", "Content-Type": "application/json"},
+    json=version_body, timeout=30)
+version_id = resp.json()["containerVersion"]["containerVersionId"]
+
+# Publish version
+resp = requests.post(f".../versions/{version_id}:publish",
+    headers={"Authorization": f"Bearer {access_token}"},
+    timeout=30)
+```
+
+### Finding Container/Account IDs from GTM Container ID (GTM-XXXXX)
+1. Call GET /accounts to list all accounts
+2. For each account, call GET /accounts/{id}/containers
+3. Match container.publicId == "GTM-XXXXX"
+4. Extract accountId and containerId
+
+### Important Notes
+- workspace_id is typically "1" for the default workspace
+- Tags need triggers to fire; always create trigger first, then tag
+- Publishing requires "Publish" permission, not just "Edit"
+- If service account JSON not provided: return manual instructions for GTM UI
+- GTM UI alternative: Tags > New > Custom HTML > paste pixel code > trigger: All Pages > Save > Submit

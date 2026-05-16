@@ -1,0 +1,108 @@
+## Meta Graph API — Pixel Management Patterns
+
+### Base URL
+https://graph.facebook.com/v25.0
+
+### Authentication
+All requests require: `access_token` as query param OR `Authorization: Bearer {token}` header.
+Required permissions: ads_management, ads_read, business_management
+
+### Create Pixel
+```
+POST /act_{ad_account_id}/adspixels
+Body: {"name": "Pixel for example.com"}
+Returns: {"id": "PIXEL_ID"}
+```
+Note: ad_account_id format must include "act_" prefix (e.g. act_123456789).
+
+### Get Pixel Info + Code
+```
+GET /{pixel_id}?fields=id,name,code,last_fired_time,is_unavailable,creation_time
+Returns:
+{
+  "id": "PIXEL_ID",
+  "name": "Pixel name",
+  "code": "<script>!function(f,b,e,v,n,t,s)...</script>",
+  "last_fired_time": "2026-05-16T10:00:00+0000",
+  "is_unavailable": false
+}
+```
+The "code" field contains the full pixel JavaScript snippet ready for embedding.
+
+### List Pixels for Ad Account
+```
+GET /act_{ad_account_id}/adspixels?fields=id,name,last_fired_time
+```
+
+### Get Ad Accounts for Current User
+```
+GET /me/adaccounts?fields=id,name,account_status
+```
+account_status: 1=Active, 2=Disabled, 3=Unsettled, 7=Pending_risk_review, 9=In_grace_period
+
+### Send Test Event via Conversions API (for verification)
+```
+POST /{pixel_id}/events?access_token={token}
+Body:
+{
+  "data": [{
+    "event_name": "PageView",
+    "event_time": 1715000000,
+    "action_source": "website",
+    "event_source_url": "https://example.com",
+    "user_data": {
+      "client_ip_address": "1.2.3.4",
+      "client_user_agent": "Mozilla/5.0 (Extella Pixel Verifier)"
+    }
+  }],
+  "test_event_code": "TEST_EXTELLA"
+}
+Returns: {"events_received": 1, "fbtrace_id": "..."}
+```
+Note: test_event_code makes event appear in Events Manager > Test Events tab. Remove in production.
+
+### Pixel Event Stats
+```
+GET /{pixel_id}/stats?aggregation=event_name&start_time={unix}&end_time={unix}
+```
+
+### Python Request Pattern
+```python
+import requests, time
+BASE = "https://graph.facebook.com/v25.0"
+TOKEN = "your_access_token"
+
+def graph_get(path, params=None):
+    p = {"access_token": TOKEN}
+    if params: p.update(params)
+    r = requests.get(f"{BASE}/{path}", params=p, timeout=30)
+    r.raise_for_status()
+    return r.json()
+
+def graph_post(path, data):
+    r = requests.post(f"{BASE}/{path}", params={"access_token": TOKEN},
+                      json=data, timeout=30)
+    r.raise_for_status()
+    return r.json()
+```
+
+### Common Error Codes
+- 190: Invalid access token
+- 200: Permission error (missing ads_management scope)
+- 100: Invalid parameter
+- 368: Temporarily blocked (rate limit)
+
+### Pixel Verification Check
+After sending test event via CAPI:
+```python
+# Poll last_fired_time for up to 90 seconds
+for _ in range(9):
+    info = graph_get(f"{pixel_id}", {"fields": "last_fired_time,is_unavailable"})
+    last_fired = info.get("last_fired_time", "")
+    if last_fired:
+        fired_dt = datetime.fromisoformat(last_fired.replace("+0000", "+00:00"))
+        if (datetime.now(timezone.utc) - fired_dt).total_seconds() < 300:
+            return True  # pixel fired recently
+    time.sleep(10)
+return False
+```

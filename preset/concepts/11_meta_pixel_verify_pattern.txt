@@ -1,0 +1,105 @@
+## Meta Pixel Verification Pattern
+
+### Goal
+Confirm the pixel is receiving events after installation, without requiring the user to manually open a browser.
+
+### Method: Conversions API (CAPI) Test Event
+Send a server-side PageView event to the pixel. This fires the pixel programmatically and makes it appear in Events Manager.
+
+### Step 1: Send Test Event via CAPI
+```python
+import requests, time, socket
+
+def send_test_event(pixel_id, access_token, landing_url):
+    endpoint = f"https://graph.facebook.com/v25.0/{pixel_id}/events"
+    payload = {
+        "data": [{
+            "event_name": "PageView",
+            "event_time": int(time.time()),
+            "action_source": "website",
+            "event_source_url": landing_url,
+            "user_data": {
+                "client_ip_address": "1.2.3.4",
+                "client_user_agent": "Mozilla/5.0 (Extella Pixel Installer/1.0)"
+            }
+        }],
+        "test_event_code": "TEST_EXTELLA_VERIFY"
+    }
+    resp = requests.post(endpoint,
+        params={"access_token": access_token},
+        json=payload, timeout=30)
+    return resp.json()
+```
+
+### Step 2: Poll last_fired_time (up to 90 seconds)
+```python
+from datetime import datetime, timezone
+
+def poll_pixel_status(pixel_id, access_token, max_wait=90, interval=10):
+    deadline = time.time() + max_wait
+    while time.time() < deadline:
+        resp = requests.get(
+            f"https://graph.facebook.com/v25.0/{pixel_id}",
+            params={
+                "fields": "last_fired_time,is_unavailable,name",
+                "access_token": access_token
+            },
+            timeout=15
+        )
+        data = resp.json()
+        last_fired = data.get("last_fired_time", "")
+        is_unavailable = data.get("is_unavailable", False)
+
+        if is_unavailable:
+            return {"status": "unavailable", "message": "Pixel is marked unavailable"}
+
+        if last_fired:
+            try:
+                fired_dt = datetime.fromisoformat(last_fired.replace("+0000", "+00:00"))
+                seconds_ago = (datetime.now(timezone.utc) - fired_dt).total_seconds()
+                if seconds_ago < 300:  # fired in last 5 minutes
+                    return {
+                        "status": "active",
+                        "last_fired_time": last_fired,
+                        "seconds_ago": int(seconds_ago)
+                    }
+            except: pass
+
+        time.sleep(interval)
+
+    return {"status": "pending", "message": "Pixel created but no events yet. Check Events Manager."}
+```
+
+### Step 3: Return Verification Result
+```python
+def verify_pixel(pixel_id, access_token, landing_url):
+    print("[1/2] Sending test event via Conversions API...")
+    test_result = send_test_event(pixel_id, access_token, landing_url)
+    events_received = test_result.get("events_received", 0)
+
+    print("[2/2] Polling pixel status...")
+    time.sleep(5)  # small initial wait
+    status = poll_pixel_status(pixel_id, access_token)
+
+    return {
+        "status": "success",
+        "pixel_id": pixel_id,
+        "test_events_received": events_received,
+        "pixel_status": status.get("status"),
+        "last_fired_time": status.get("last_fired_time", ""),
+        "events_manager_url": f"https://business.facebook.com/events_manager2/list/pixel/{pixel_id}",
+        "test_events_url": f"https://business.facebook.com/events_manager2/list/pixel/{pixel_id}/test_events"
+    }
+```
+
+### What Each Status Means
+| status | Meaning | What to Tell User |
+|---|---|---|
+| active | Pixel fired within last 5 minutes | "Pixel is active and receiving events!" |
+| pending | No events yet but pixel exists | "Pixel created. Visit your site to trigger the first event." |
+| unavailable | Pixel marked inactive by Meta | "Pixel is inactive. Check your Meta Business account." |
+| error | API call failed | "Could not verify. Check the Events Manager manually." |
+
+### Verification Link
+Direct user to test events in Meta Events Manager:
+https://business.facebook.com/events_manager2/list/pixel/{pixel_id}/test_events

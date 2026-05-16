@@ -1,0 +1,111 @@
+## Shopify Meta Pixel Installation Pattern
+
+### API Method: GraphQL Admin API (scriptTagCreate)
+Note: Script Tags are legacy as of Oct 2024 but still work for custom/private apps and vintage themes.
+
+### Required Scopes
+- write_script_tags (for scriptTagCreate)
+- read_themes (to verify theme type)
+
+### Authentication
+Use Shopify Admin API access token in X-Shopify-Access-Token header.
+Admin API URL format: https://{shop_domain}/admin/api/2024-01/graphql.json
+
+### Step 1: Get Shop Info
+```python
+import requests, json
+
+def shopify_post(shop_domain, access_token, query, variables=None):
+    url = f"https://{shop_domain}/admin/api/2024-01/graphql.json"
+    headers = {
+        "X-Shopify-Access-Token": access_token,
+        "Content-Type": "application/json"
+    }
+    body = {"query": query}
+    if variables:
+        body["variables"] = variables
+    resp = requests.post(url, headers=headers, json=body, timeout=30)
+    resp.raise_for_status()
+    return resp.json()
+
+# Verify access
+info = shopify_post(shop_domain, access_token, "{ shop { name, myshopifyDomain } }")
+shop_name = info["data"]["shop"]["name"]
+```
+
+### Step 2: Create Script Tag (GraphQL)
+```python
+CREATE_SCRIPT_TAG = """
+mutation ScriptTagCreate($input: ScriptTagInput!) {
+  scriptTagCreate(input: $input) {
+    scriptTag {
+      id
+      src
+      displayScope
+    }
+    userErrors {
+      field
+      message
+    }
+  }
+}
+"""
+
+# Note: Script tags need a hosted JS file URL, not inline code.
+# We host the pixel as a small JS snippet loaded via script src.
+# HOWEVER: for inline HTML tag injection, use REST API themes approach.
+
+# ALTERNATIVE: REST Admin API for theme file editing (more reliable for pixel)
+```
+
+### Better Method: Edit theme.liquid via REST API
+```python
+# Step 1: Get active theme
+resp = requests.get(
+    f"https://{shop_domain}/admin/api/2024-01/themes.json",
+    headers={"X-Shopify-Access-Token": access_token},
+    timeout=30
+)
+themes = resp.json()["themes"]
+active_theme = next((t for t in themes if t["role"] == "main"), themes[0])
+theme_id = active_theme["id"]
+
+# Step 2: Get theme.liquid
+resp = requests.get(
+    f"https://{shop_domain}/admin/api/2024-01/themes/{theme_id}/assets.json",
+    params={"asset[key]": "layout/theme.liquid"},
+    headers={"X-Shopify-Access-Token": access_token},
+    timeout=30
+)
+theme_liquid = resp.json()["asset"]["value"]
+
+# Step 3: Inject pixel after <head>
+if "<!-- Meta Pixel Code" in theme_liquid:
+    return {"status": "already_installed"}
+
+new_content = theme_liquid.replace(
+    "<head>",
+    "<head>\n" + pixel_code + "\n",
+    1
+)
+
+# Step 4: Update theme.liquid
+resp = requests.put(
+    f"https://{shop_domain}/admin/api/2024-01/themes/{theme_id}/assets.json",
+    headers={"X-Shopify-Access-Token": access_token, "Content-Type": "application/json"},
+    json={"asset": {"key": "layout/theme.liquid", "value": new_content}},
+    timeout=30
+)
+```
+
+### Shopify Admin API Token Setup
+Shopify Admin → Settings → Apps and sales channels → Develop apps → Create app → Configure Admin API scopes:
+- read_themes, write_themes (for theme.liquid editing)
+- read_script_tags, write_script_tags
+
+### Important Notes
+- shop_domain format: mystore.myshopify.com (without https://)
+- Theme editing requires write_themes scope
+- Always check for existing pixel before injecting (prevent duplicates)
+- theme.liquid is the main layout file in Shopify themes
+- Shopify Plus merchants may have custom storefronts — manual mode if not standard theme
