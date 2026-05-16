@@ -1,77 +1,88 @@
 ## META PIXEL INSTALLER PRESET — Master Guide
 
 ### What This Preset Does
-Automatically installs a Meta (Facebook) Pixel on a landing page. Works end-to-end: creates the pixel in the Meta Ads account, detects the site platform, installs the pixel code, configures events, verifies activation, and reports back.
+Automatically installs a Meta (Facebook) Pixel on a landing page. Works end-to-end: creates the pixel (using the user's existing browser session — no app registration needed), detects the site platform, installs the pixel code, configures events, and reports back.
 
 ---
 
 ### AGENT WORKFLOW — Follow These Steps Exactly
 
-**STEP 0 — Meta Facebook App in KV (required before OAuth)**
-Before calling `meta_token_from_browser`, ensure Extella KV contains `meta_app_id` and `meta_app_secret` for **your** Meta Developer app (OAuth client).
+**STEP 0 — Get Device UUID (required for local execution)**
+All experts that run in the user's browser must execute locally on their device.
 
-1. Optionally call `POST /api/kv/get` with keys `meta_app_id` and `meta_app_secret` (via agent tools) to see if they are already set.
-2. If either is missing:
-   - Retrieve and follow concept **`12_meta_developer_app_onboarding`** (file `12_meta_developer_app_onboarding.txt`) for the full checklist and redirect URIs.
-   - Run expert **`meta_app_onboarding_assistant`** LOCALLY (`target` = KV key `extella_device_uuid`):
-     - Params: `api_token`, `base_url` = "https://api.extella.ai", `open_browser` = true
-     - Ask the user to paste **App ID** and **App Secret** from Meta for Developers, then re-run the same expert with `meta_app_id` and `meta_app_secret` filled in — it validates via Graph API and saves both keys to KV.
-3. Only after KV has both keys, proceed to STEP 1.
+1. Check KV key `extella_device_uuid`. If missing, ask the user:
+   "Please open Extella Desktop → Settings and copy the Device UUID, then paste it here."
+2. Save it to KV if not already stored.
+3. Use this UUID as `target` (the `device_uuid` parameter) for all local expert calls.
 
-**STEP 1 — Get Meta Access Token (automatic, no manual input needed)**
-Call expert: `meta_token_from_browser`
-- Params: `api_token` (your Extella token from KV key "extella_api_token"), `base_url` = "https://api.extella.ai"
-- This expert runs LOCALLY on the user's device. Use `target` = value of KV key "extella_device_uuid"
-- Returns: `{token, ad_accounts: [{id, name}], user_name, browser_used}`
-- If status = "not_logged_in": ask user to open Facebook in their browser and retry, or ask them to paste a token manually
-- If status = "error" and message mentions missing app credentials: return to STEP 0 (`meta_app_onboarding_assistant` + concept `12_meta_developer_app_onboarding`)
-- If status = "error" for other reasons: ask user to paste their Meta access token manually
+**STEP 1 — Create Pixel (fully automatic, no app registration needed)**
+Call expert: `meta_pixel_pipeline`
+- Pass `device_uuid` so the pipeline runs `meta_pixel_create_headless` locally.
+- The expert automatically reads the user's active Facebook session from their browser (Chrome or Firefox).
+- No OAuth, no Meta Developer App, no tokens needed upfront.
+- Params: `landing_url`, `device_uuid`, `api_token`, `pixel_name` (optional), `cms_type` (if known), `cms_credentials` (if known).
 
-**STEP 2 — Select Ad Account**
-- If `ad_accounts` has 1 item: use it automatically, tell user "Using ad account: {name}"
-- If multiple: show list and ask "Which ad account should I use for the pixel?" (show name + id)
-- Remember the selected `ad_account_id` (format: act_XXXXXXXXXX)
+Expected outcomes from `meta_pixel_pipeline`:
+- `status=success` → pixel created and (if credentials given) installed. Proceed to STEP 4.
+- `pixel_status=verification_skipped` → pixel created but not verified (normal in headless mode). Provide Events Manager link and suggest manual check.
+- `status=error, step=pixel_creation` → see STEP 1-FALLBACK below.
+
+**STEP 1-FALLBACK — If headless creation fails**
+Headless may fail if:
+- The user is not logged into Facebook in their browser → ask them to log in at https://www.facebook.com and retry.
+- Events Manager UI changed → try the OAuth path below.
+- Playwright not installed → the pipeline will install it automatically; if that also fails, ask the user to run `meta_playwright_setup` locally.
+
+For OAuth fallback (more reliable but requires one-time app setup):
+1. Check KV keys `meta_app_id` and `meta_app_secret`.
+2. If missing: retrieve concept `12_meta_developer_app_onboarding` and run expert `meta_app_onboarding_assistant` LOCALLY.
+3. Call expert `meta_token_from_browser` LOCALLY to get `meta_access_token` and `ad_accounts`.
+4. Select ad account (STEP 2), then call `meta_pixel_pipeline` again with `meta_access_token` and `ad_account_id`.
+
+**STEP 2 — Select Ad Account (OAuth path only)**
+- If `ad_accounts` has 1 item: use it automatically, say "Using ad account: {name}"
+- If multiple: list them and ask which to use.
+- Format: act_XXXXXXXXXX
 
 **STEP 3 — Get Landing Page URL**
 Ask: "What is the URL of the landing page where I should install the pixel?"
 Validate: must start with http:// or https://
 
-**STEP 4 — Detect Site Platform (automatic)**
+**STEP 3b — Detect Site Platform (automatic)**
 Call expert: `meta_site_detector`
 - Params: `url` = landing page URL
-- Returns: `{cms_type, has_gtm, confidence, signals}`
 - Tell user: "I detected your site is running on [cms_type] (confidence: X%)"
 - If confidence < 0.4: tell user what was detected but proceed carefully
 
-**STEP 5 — Collect Platform Credentials (ask only what's needed)**
+**STEP 3c — Collect Platform Credentials (ask only what's needed)**
 
 | cms_type | What to ask |
 |---|---|
 | gtm | "Please share your GTM service account JSON (from Google Cloud Console)" |
-| wordpress | "Please share your WordPress admin username + Application Password (WP Admin → Users → Application Passwords). Also optional: FTP host/user/pass for direct file editing" |
-| shopify | "Please share your Shopify Admin API access token (from Shopify Admin → Apps → API credentials)" |
+| wordpress | "Please share your WordPress admin username + Application Password. Optional: FTP credentials" |
+| shopify | "Please share your Shopify Admin API access token" |
 | ftp / custom | "Please share FTP credentials: host, username, password" |
 | wix / tilda / unknown | "I'll generate the pixel code for you to paste manually — no credentials needed" |
 
-**STEP 6 — Run Installation Pipeline**
+**STEP 4 — Run Full Pipeline**
 Call expert: `meta_pixel_pipeline`
-- Params: all collected info (see expert kwargs)
-- This is one call that handles everything: create pixel → install → verify
+- Params: all collected info including `device_uuid`
 - Timeout: 300 seconds — reassure user "Installing, this may take 1-2 minutes..."
 
-**STEP 7 — Report Results**
+**STEP 5 — Report Results**
 When pipeline returns, report to user:
 ```
 ✅ Meta Pixel installed successfully!
 
 Pixel ID: {pixel_id}
+Created via: {creation_method}
 Platform: {cms_type}
 Install method: {install_method}
-Status: {verification_status}
-Active events: PageView (auto), Lead (on form submit), Purchase (on conversion page)
+Active events: PageView (auto), Lead (on form submit)
 
 Events Manager: https://business.facebook.com/events_manager2/list/pixel/{pixel_id}
 ```
+If `pixel_status=verification_skipped`: add "Note: verification was skipped in headless mode. Open Events Manager to confirm the pixel is active."
 If manual mode: provide the pixel code and step-by-step instructions for the detected platform.
 
 ---
@@ -80,17 +91,19 @@ If manual mode: provide the pixel code and step-by-step instructions for the det
 
 | Expert | CSPL | Run Mode | Purpose |
 |---|---|---|---|
-| meta_app_onboarding_assistant | fython | LOCAL | Guided Meta Developer app setup: FB login check, links, redirect URIs, validate App ID/Secret, save to KV |
-| meta_token_from_browser | fython | LOCAL | Extract Meta token from browser cookies via OAuth |
+| meta_playwright_setup | fython | LOCAL | One-time install of Playwright + Chromium browser binary |
+| meta_pixel_create_headless | fython | LOCAL | Creates pixel by automating Events Manager UI via browser session (no OAuth) |
+| meta_app_onboarding_assistant | fython | LOCAL | Fallback: guided Meta Developer app setup; validates App ID/Secret and saves to KV |
+| meta_token_from_browser | fython | LOCAL | Fallback: extract Meta token via OAuth using browser cookies |
 | meta_site_detector | fython | serverless | Detect CMS type from URL |
-| meta_pixel_pipeline | fython | serverless | Master installer orchestrator |
-| meta_pixel_create | fython | serverless | Create pixel via Meta Graph API |
+| meta_pixel_pipeline | fython | serverless | Master installer orchestrator (calls headless or API creation internally) |
+| meta_pixel_create | fython | serverless | Fallback: create pixel via Meta Graph API (requires OAuth token) |
 | meta_pixel_install_gtm | fython | serverless | Install via Google Tag Manager API |
 | meta_pixel_install_wp | fython | serverless | Install via WordPress REST API + FTP |
 | meta_pixel_install_shopify | fython | serverless | Install via Shopify GraphQL API |
 | meta_pixel_install_ftp | fython | serverless | Install via FTP file injection |
 | meta_pixel_generate_code | prompt | serverless | Generate pixel HTML code snippet |
-| meta_pixel_verify | fython | serverless | Verify pixel fires via CAPI test event |
+| meta_pixel_verify | fython | serverless | Verify pixel fires via CAPI test event (requires OAuth token) |
 
 ---
 
@@ -99,17 +112,21 @@ If manual mode: provide the pixel code and step-by-step instructions for the det
 | Key | Description |
 |---|---|
 | extella_api_token | Extella API token |
-| extella_device_uuid | UUID of the user's local device (Extella Desktop) |
-| meta_app_id | Facebook App ID for OAuth flow |
-| meta_app_secret | Facebook App Secret for OAuth flow |
-| meta_access_token | Saved Meta access token (set by meta_token_from_browser) |
+| extella_device_uuid | UUID of the user's local device (Extella Desktop) — REQUIRED |
+| meta_app_id | Facebook App ID for OAuth flow (optional, fallback only) |
+| meta_app_secret | Facebook App Secret for OAuth flow (optional, fallback only) |
+| meta_access_token | Saved Meta access token (set by meta_token_from_browser, optional) |
 
 ---
 
 ### HANDLING FAILURES
 
-- If meta_token_from_browser fails because `meta_app_id` / `meta_app_secret` are missing: run STEP 0 (`meta_app_onboarding_assistant` + concept `12_meta_developer_app_onboarding`)
-- If meta_pixel_create fails: check that Meta token has ads_management permission; suggest re-running meta_token_from_browser
-- If installation fails: offer manual mode — call meta_pixel_generate_code and provide code + instructions
-- If verification fails: pixel may need a few minutes; provide Events Manager URL and suggest the user checks manually
+- **Headless: not_logged_in** → ask user to log into Facebook at https://www.facebook.com in their browser, then retry
+- **Headless: session_expired** → same as above
+- **Headless: setup_required** → run `meta_playwright_setup` locally (device_uuid), then retry
+- **Headless: error** → try OAuth fallback (STEP 1-FALLBACK); or provide pixel code for manual install
+- **meta_token_from_browser: missing app credentials** → run `meta_app_onboarding_assistant` + concept `12_meta_developer_app_onboarding`
+- **meta_pixel_create (API): ads_management error** → re-run `meta_token_from_browser` to refresh token
+- **Installation fails** → offer manual mode — call `meta_pixel_generate_code` and provide code + instructions
+- **Verification skipped** → this is normal in headless mode; provide Events Manager URL and tell user to wait a few minutes then check manually
 - Always be helpful: non-technical users need clear, friendly explanations without jargon

@@ -2,21 +2,22 @@ $extens("include.py")
 include("import requests", ["extella-pip install requests"])
 
 def meta_pixel_pipeline(
-    meta_access_token: str = "",
-    ad_account_id: str = "",
     landing_url: str = "",
     cms_type: str = "",
     cms_credentials: str = "{}",
     pixel_name: str = "",
     api_token: str = "",
     base_url: str = "https://api.extella.ai",
+    device_uuid: str = "",
+    # OAuth path (optional — used only if headless fails)
+    meta_access_token: str = "",
+    ad_account_id: str = "",
 ) -> dict:
     import requests
     import json
 
-    if not meta_access_token or not ad_account_id or not landing_url:
-        return {"status": "error",
-                "message": "meta_access_token, ad_account_id, and landing_url are required"}
+    if not landing_url:
+        return {"status": "error", "message": "landing_url is required"}
 
     # Parse CMS credentials
     try:
@@ -24,8 +25,11 @@ def meta_pixel_pipeline(
     except Exception:
         creds = {}
 
-    # Helper to call sub-expert
-    def run_sub(expert_name, params, timeout=180):
+    # Helper to call sub-expert (optionally on a local device)
+    def run_sub(expert_name, params, timeout=180, target=None):
+        payload = {"expert_name": expert_name, "params": params, "timeout": timeout}
+        if target:
+            payload["target"] = target
         try:
             resp = requests.post(
                 f"{base_url}/api/expert/run",
@@ -35,7 +39,7 @@ def meta_pixel_pipeline(
                     "X-Profile-Id": "default",
                     "X-Agent-Id": "agent_extella_default",
                 },
-                json={"expert_name": expert_name, "params": params, "timeout": timeout},
+                json=payload,
                 timeout=timeout + 15,
             )
             if resp.status_code != 200:
@@ -45,31 +49,117 @@ def meta_pixel_pipeline(
         except Exception as e:
             return {"status": "error", "message": str(e)}
 
+    # ─── Step 1: Create Pixel ─────────────────────────────────────────────────
+
     print("[1/4] Creating Meta Pixel...")
 
-    # Step 1: Create Pixel
-    pixel_result = run_sub("meta_pixel_create", {
-        "meta_access_token": meta_access_token,
-        "ad_account_id": ad_account_id,
-        "pixel_name": pixel_name,
-        "landing_url": landing_url,
-    })
+    pixel_id = None
+    pixel_code = None
+    pixel_result = {}
+    creation_method = "unknown"
 
-    if pixel_result.get("status") != "success":
+    # ── Path A: Headless browser (no app or token needed) ────────────────────
+    if device_uuid:
+        print("  [A] Trying headless browser creation...")
+        headless_result = run_sub(
+            "meta_pixel_create_headless",
+            {
+                "pixel_name": pixel_name,
+                "landing_url": landing_url,
+                "api_token": api_token,
+                "base_url": base_url,
+            },
+            timeout=120,
+            target=device_uuid,
+        )
+
+        if headless_result.get("status") == "setup_required":
+            # Playwright not installed — install it, then retry once
+            print("  Playwright not ready. Running setup...")
+            setup_result = run_sub(
+                "meta_playwright_setup",
+                {"api_token": api_token, "base_url": base_url},
+                timeout=300,
+                target=device_uuid,
+            )
+            if setup_result.get("status") == "ready":
+                headless_result = run_sub(
+                    "meta_pixel_create_headless",
+                    {
+                        "pixel_name": pixel_name,
+                        "landing_url": landing_url,
+                        "api_token": api_token,
+                        "base_url": base_url,
+                    },
+                    timeout=120,
+                    target=device_uuid,
+                )
+
+        if headless_result.get("status") == "success":
+            pixel_id = headless_result["pixel_id"]
+            pixel_code = headless_result["pixel_code"]
+            pixel_result = headless_result
+            creation_method = "headless_browser"
+            print(f"  [A] Headless creation OK — pixel_id: {pixel_id}")
+        else:
+            status = headless_result.get("status", "error")
+            print(f"  [A] Headless failed (status={status}): {headless_result.get('message', '')[:120]}")
+
+    # ── Path B: OAuth / Graph API (fallback) ──────────────────────────────────
+    if not pixel_id and meta_access_token and ad_account_id:
+        print("  [B] Trying OAuth / Graph API creation...")
+        api_result = run_sub(
+            "meta_pixel_create",
+            {
+                "meta_access_token": meta_access_token,
+                "ad_account_id": ad_account_id,
+                "pixel_name": pixel_name,
+                "landing_url": landing_url,
+            },
+            timeout=60,
+        )
+        if api_result.get("status") == "success":
+            pixel_id = api_result["pixel_id"]
+            pixel_code = api_result["pixel_code"]
+            pixel_result = api_result
+            creation_method = "graph_api"
+            print(f"  [B] API creation OK — pixel_id: {pixel_id}")
+        else:
+            print(f"  [B] API creation failed: {api_result.get('message', '')[:120]}")
+
+    if not pixel_id:
+        details_parts = []
+        if device_uuid:
+            details_parts.append(
+                f"Headless browser: {headless_result.get('status', '?')} — "
+                f"{headless_result.get('message', '')[:150]}"
+            )
+            if headless_result.get("fallback"):
+                details_parts.append(f"Headless fallback hint: {headless_result['fallback']}")
+        if meta_access_token and ad_account_id:
+            details_parts.append(
+                f"Graph API: {api_result.get('status', '?')} — "
+                f"{api_result.get('message', '')[:150]}"
+            )
+
         return {
             "status": "error",
             "step": "pixel_creation",
-            "message": pixel_result.get("message", "Pixel creation failed"),
-            "details": pixel_result,
+            "message": "Pixel creation failed via all available methods.",
+            "details": " | ".join(details_parts) if details_parts else "No creation methods were attempted.",
+            "hint": (
+                "If headless failed: ensure you are logged into Facebook in your browser and retry. "
+                "If Graph API failed: re-run meta_token_from_browser. "
+                "If device_uuid is missing: pass it so the agent can run headless locally."
+            ),
         }
 
-    pixel_id = pixel_result["pixel_id"]
-    pixel_code = pixel_result["pixel_code"]
-    print(f"[1/4] Pixel created: {pixel_id}")
+    print(f"[1/4] Pixel created: {pixel_id} (via {creation_method})")
+
+    # ─── Step 2: Install ───────────────────────────────────────────────────────
 
     print(f"[2/4] Installing pixel via {cms_type or 'auto-detected method'}...")
 
-    # Step 2: Install
     install_result = {}
     install_method = "manual"
 
@@ -128,7 +218,6 @@ def meta_pixel_pipeline(
         install_result = run_sub(expert_name, expert_params, timeout=120)
         install_method = install_result.get("install_method", cms_normalized)
     else:
-        # Manual mode for Wix, Tilda, unknown
         install_result = {
             "status": "manual_required",
             "install_method": "manual",
@@ -141,22 +230,33 @@ def meta_pixel_pipeline(
 
     print(f"[2/4] Install result: {install_result.get('status')} via {install_method}")
 
+    # ─── Step 3: Verify ───────────────────────────────────────────────────────
+
     print("[3/4] Verifying pixel activation...")
 
-    # Step 3: Verify
-    verify_result = run_sub("meta_pixel_verify", {
-        "pixel_id": pixel_id,
-        "meta_access_token": meta_access_token,
-        "landing_url": landing_url,
-        "wait_seconds": 60,
-    }, timeout=120)
+    verify_result = {}
+    pixel_status = "verification_skipped"
 
-    pixel_status = verify_result.get("pixel_status", "pending")
-    print(f"[3/4] Pixel status: {pixel_status}")
+    if meta_access_token:
+        verify_result = run_sub(
+            "meta_pixel_verify",
+            {
+                "pixel_id": pixel_id,
+                "meta_access_token": meta_access_token,
+                "landing_url": landing_url,
+                "wait_seconds": 60,
+            },
+            timeout=120,
+        )
+        pixel_status = verify_result.get("pixel_status", "pending")
+        print(f"[3/4] Pixel status: {pixel_status}")
+    else:
+        print("[3/4] Skipping verification (no access token — headless mode)")
+
+    # ─── Step 4: Report ───────────────────────────────────────────────────────
 
     print("[4/4] Building final report...")
 
-    # Step 4: Build comprehensive report
     events_active = ["PageView (auto)"]
     if is_auto_installed or is_already_installed:
         events_active.append("Lead (on form submit)")
@@ -164,8 +264,8 @@ def meta_pixel_pipeline(
     report = {
         "status": "success",
         "pixel_id": pixel_id,
-        "pixel_name": pixel_result.get("pixel_name", ""),
-        "ad_account_id": ad_account_id,
+        "pixel_name": pixel_result.get("pixel_name", pixel_name),
+        "creation_method": creation_method,
         "landing_url": landing_url,
         "cms_type": cms_type,
         "install_method": install_method,
@@ -173,19 +273,23 @@ def meta_pixel_pipeline(
         "pixel_status": pixel_status,
         "events_active": events_active,
         "last_fired_time": verify_result.get("last_fired_time", ""),
-        "events_manager_url": f"https://business.facebook.com/events_manager2/list/pixel/{pixel_id}",
-        "test_events_url": f"https://business.facebook.com/events_manager2/list/pixel/{pixel_id}/test_events",
+        "events_manager_url": (
+            f"https://business.facebook.com/events_manager2/list/pixel/{pixel_id}"
+        ),
+        "test_events_url": (
+            f"https://business.facebook.com/events_manager2/list/pixel/{pixel_id}/test_events"
+        ),
         "pixel_code": pixel_code,
         "install_details": install_result,
         "verify_details": verify_result,
     }
 
-    # Add manual instructions if needed
     if install_result.get("status") == "manual_required":
         report["manual_instructions"] = install_result.get("instructions", "")
         report["message"] = (
-            f"Pixel {pixel_id} created. Automatic installation not available for {cms_type}. "
-            "Please install manually using the instructions provided."
+            f"Pixel {pixel_id} created via {creation_method}. "
+            f"Automatic installation not available for '{cms_type}'. "
+            "Please install manually using the pixel code provided."
         )
     elif is_already_installed:
         report["message"] = f"Pixel {pixel_id} was already installed on the site."
@@ -196,7 +300,8 @@ def meta_pixel_pipeline(
         )
     else:
         report["message"] = (
-            f"Pixel {pixel_id} created. Installation encountered an issue: "
+            f"Pixel {pixel_id} created via {creation_method}. "
+            f"Installation encountered an issue: "
             f"{install_result.get('message', 'unknown error')}. "
             "You can install the pixel code manually."
         )

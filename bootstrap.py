@@ -169,6 +169,48 @@ def sync_concept_registry_from_remote():
 # ─── Expert Metadata ─────────────────────────────────────────────────────────
 
 EXPERT_META = {
+    "meta_playwright_setup": {
+        "name": "meta_playwright_setup",
+        "description": (
+            "One-time setup expert that installs Playwright Python package and downloads the Chromium browser binary "
+            "required for headless browser automation. "
+            "MUST run locally (target=device_uuid). "
+            "Checks if Playwright and Chromium are already available; if not, installs them automatically. "
+            "Returns {status: 'ready'} when everything is in place. "
+            "Parameters: api_token — Extella API token; base_url — Extella API base URL."
+        ),
+        "kwargs": {
+            "api_token": "",
+            "base_url": "https://api.extella.ai",
+        },
+        "cspl": "fython",
+        "file": "meta_playwright_setup.py",
+    },
+    "meta_pixel_create_headless": {
+        "name": "meta_pixel_create_headless",
+        "description": (
+            "Creates a Meta (Facebook) Pixel by automating the Events Manager UI via the user's existing browser session. "
+            "No OAuth app registration or access token required. "
+            "Uses pycookiecheat to extract the user's active Facebook cookies from Chrome or Firefox, "
+            "injects them into a headless Playwright browser, navigates to business.facebook.com/events_manager2, "
+            "and clicks through the pixel creation wizard automatically. "
+            "Returns pixel_id and pixel_code on success. "
+            "MUST run locally (target=device_uuid). Requires meta_playwright_setup to have been run first. "
+            "Parameters: pixel_name — optional name for the new pixel; "
+            "landing_url — used to auto-generate pixel name from domain; "
+            "api_token — Extella API token; base_url — Extella API base URL; "
+            "headless — run browser in headless mode (default true)."
+        ),
+        "kwargs": {
+            "pixel_name": "",
+            "landing_url": "",
+            "api_token": "",
+            "base_url": "https://api.extella.ai",
+            "headless": True,
+        },
+        "cspl": "fython",
+        "file": "meta_pixel_create_headless.py",
+    },
     "meta_app_onboarding_assistant": {
         "name": "meta_app_onboarding_assistant",
         "description": (
@@ -382,18 +424,20 @@ EXPERT_META = {
         "name": "meta_pixel_pipeline",
         "description": (
             "Master orchestrator for Meta Pixel installation. Runs the full pipeline: "
-            "1) Creates pixel via meta_pixel_create, "
-            "2) Installs via the appropriate platform expert (GTM/WordPress/Shopify/FTP/manual), "
-            "3) Verifies via meta_pixel_verify, "
-            "4) Returns comprehensive report with pixel_id, install_method, status, events, and links. "
-            "Parameters: meta_access_token — Meta access token; "
-            "ad_account_id — Meta ad account ID; "
-            "landing_url — URL of the landing page; "
-            "cms_type — platform type from meta_site_detector (wordpress/shopify/gtm/ftp/wix/tilda/unknown); "
-            "cms_credentials — JSON string with platform-specific credentials (see below); "
-            "pixel_name — optional custom pixel name; "
+            "1) Creates pixel — first tries headless browser automation (meta_pixel_create_headless, no app needed), "
+            "then falls back to Graph API (meta_pixel_create) if meta_access_token and ad_account_id are provided; "
+            "2) Installs via the appropriate platform expert (GTM/WordPress/Shopify/FTP/manual); "
+            "3) Verifies via meta_pixel_verify if meta_access_token is available (skipped in headless mode); "
+            "4) Returns comprehensive report with pixel_id, creation_method, install_method, status, events, and links. "
+            "Primary parameters: landing_url — URL of the landing page (required); "
+            "device_uuid — local device UUID for running headless browser (strongly recommended); "
             "api_token — Extella API token for calling sub-experts; "
-            "base_url — Extella API base URL. "
+            "base_url — Extella API base URL; "
+            "cms_type — platform type from meta_site_detector (wordpress/shopify/gtm/ftp/wix/tilda/unknown); "
+            "cms_credentials — JSON string with platform-specific credentials; "
+            "pixel_name — optional custom pixel name. "
+            "OAuth fallback parameters (optional): meta_access_token — Meta access token; "
+            "ad_account_id — Meta ad account ID. "
             "cms_credentials JSON keys by platform: "
             "GTM: {gtm_container_id, gtm_service_account_json}; "
             "WordPress: {wp_username, wp_app_password, ftp_host, ftp_user, ftp_pass}; "
@@ -401,14 +445,15 @@ EXPERT_META = {
             "FTP: {ftp_host, ftp_user, ftp_pass, ftp_path}."
         ),
         "kwargs": {
-            "meta_access_token": "",
-            "ad_account_id": "",
             "landing_url": "",
             "cms_type": "",
             "cms_credentials": "{}",
             "pixel_name": "",
             "api_token": "",
             "base_url": "https://api.extella.ai",
+            "device_uuid": "",
+            "meta_access_token": "",
+            "ad_account_id": "",
         },
         "cspl": "fython",
         "file": "meta_pixel_pipeline.py",
@@ -530,9 +575,11 @@ def print_summary(concept_results, expert_results):
         print(f"\n{color('⚠️  Some items failed. Check errors above.', '1;33')}")
 
     print(f"\n{color('Next steps:', '1;36')}")
-    print("  1. Run meta_app_onboarding_assistant locally to save meta_app_id + meta_app_secret to KV (or set manually)")
-    print("  2. Set KV key: extella_device_uuid (from Extella Desktop settings)")
-    print("  3. Run meta_token_from_browser locally for OAuth, then use the pixel installer pipeline from chat")
+    print("  1. Set KV key: extella_device_uuid (from Extella Desktop → Settings)")
+    print("  2. Ensure you are logged into Facebook in your browser (Chrome or Firefox)")
+    print("  3. In Extella chat, invoke the master concept: 01_meta_pixel_preset_guide")
+    print("     The agent will automatically create the pixel via your browser session — no app registration needed.")
+    print("  4. (Optional OAuth fallback) Run meta_app_onboarding_assistant locally to save meta_app_id + meta_app_secret")
     print()
 
 # ─── Main ─────────────────────────────────────────────────────────────────────
