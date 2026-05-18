@@ -22,29 +22,18 @@ with scaling recommendations.
 
 ### AGENT WORKFLOW — Follow These Steps Exactly
 
-**STEP 0a — Obtain Graph API token (skip if meta_token already available in KV)**
-If the user does NOT have a Meta Graph API token (ads_meta_token not set in KV), run this step first.
+**STEP 0a — Obtain Graph API token and Pixel ID (skip if both already available in KV)**
+Check KV keys `ads_meta_token` and `ads_pixel_id`. If either is missing or empty:
 
-Check KV key `ads_meta_token`. If empty or missing:
+Invoke the master concept of the **Meta Pixel Installer preset**: `01_meta_pixel_preset_guide`
+It will handle everything on its own — Meta app setup, browser-based token acquisition,
+pixel creation, and saving all credentials to KV. Return here once it reports success.
 
-1. Check if Meta App credentials are available in KV (`meta_app_id` and `meta_app_secret`).
-   - If missing: call expert `meta_app_onboarding_assistant` LOCALLY (target = extella_device_uuid).
-     This expert guides the user to register a Meta Developer App and saves app credentials to KV.
-   - If already present: skip to step 2.
+After the pixel installer completes, the following KV keys should be set and ready to use:
+- `meta_access_token` → copy its value into `ads_meta_token`
+- `ads_pixel_id` (or retrieve the pixel_id returned by the pixel installer)
 
-2. Call expert `meta_token_from_browser` LOCALLY (target = extella_device_uuid).
-   - This expert opens a browser OAuth window, the user authorizes once, and the token is saved to KV.
-   - Returns: `{status: "success", access_token: "...", ad_accounts: [...]}`
-   - The access_token has ads_management + business_management scopes.
-   - Save the returned token to KV key `ads_meta_token`.
-
-3. Ask the user to select their ad account from the list returned by `meta_token_from_browser`.
-   Save the selected account ID to KV key `ads_ad_account_id`.
-
-Tell the user: "I've obtained your Meta access token. Now let's continue with the campaign setup."
-
-Note: If the user already has a token from another source (e.g. Business Manager System User),
-they can simply provide it directly — STEP 0a can be skipped entirely.
+If the user already has both a Graph API token and a Pixel ID, skip this step entirely.
 
 **STEP 0 — Collect and validate all inputs**
 Call expert: `ads_intake`
@@ -171,8 +160,7 @@ Call expert: `ads_report_final`
 
 ### HANDLING FAILURES
 
-- **meta_token missing**: run STEP 0a — call `meta_app_onboarding_assistant` then `meta_token_from_browser` LOCALLY
-- **meta_token_from_browser fails (no app credentials)**: run `meta_app_onboarding_assistant` first to set up Meta App ID/Secret in KV
+- **meta_token or pixel_id missing**: invoke the `01_meta_pixel_preset_guide` master concept — it handles app setup, OAuth, and pixel creation automatically
 - **ads_intake needs_input**: ask user for each missing field specifically; re-run until status=ready
 - **ads_capi_git_install fails**: show error; proceed without CAPI if user agrees; note reduced tracking accuracy
 - **ads_audience_builder fails**: ask user to describe audience more specifically; retry
