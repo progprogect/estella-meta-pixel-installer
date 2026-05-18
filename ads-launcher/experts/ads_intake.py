@@ -22,7 +22,6 @@ def ads_intake(
     base_url: str = "https://api.extella.ai",
 ) -> dict:
     import requests
-    import json
 
     REQUIRED = {
         "product_info": product_info,

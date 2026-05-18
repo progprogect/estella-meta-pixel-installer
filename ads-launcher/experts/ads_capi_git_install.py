@@ -11,7 +11,6 @@ def ads_capi_git_install(
     device_uuid: str = "",
 ) -> dict:
     import requests
-    import json
     import os
     import tempfile
     import re
