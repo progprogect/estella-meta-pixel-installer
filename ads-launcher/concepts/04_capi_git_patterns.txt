@@ -1,0 +1,291 @@
+## CAPI GIT INTEGRATION PATTERNS — Node.js / Python / PHP
+
+### What is CAPI (Conversions API)
+Server-side event sending that supplements browser pixel.
+Sends conversion events directly from the backend → Meta servers.
+Benefits: iOS 14+ tracking, ad blocker bypass, higher event match quality (EMQ).
+
+CAPI token: obtained from Meta Events Manager → Data Sources → {pixel} → Settings → Generate access token
+Pixel ID: same as browser pixel ID
+
+---
+
+### Tech Stack Detection (from repository file tree)
+
+```
+package.json           → Node.js (check dependencies for express/next/koa/fastify)
+requirements.txt       → Python
+app.py / manage.py     → Python (Flask / Django)
+pyproject.toml         → Python
+composer.json          → PHP (check require for laravel/framework, slim/slim, etc.)
+Gemfile                → Ruby on Rails
+go.mod                 → Go
+```
+
+---
+
+### Pattern A — Node.js / Express
+
+Install: npm install facebook-nodejs-business-sdk
+Or without SDK: standard https/axios POST
+
+File to create: lib/meta_capi.js (or src/meta_capi.js depending on project structure)
+
+```javascript
+// lib/meta_capi.js — Meta Conversions API helper
+const crypto = require('crypto');
+const https = require('https');
+
+const PIXEL_ID = process.env.META_PIXEL_ID;
+const ACCESS_TOKEN = process.env.META_CAPI_TOKEN;
+const API_VERSION = 'v25.0';
+
+function hashData(value) {
+  if (!value) return null;
+  return crypto.createHash('sha256').update(value.trim().toLowerCase()).digest('hex');
+}
+
+async function sendEvent({ eventName, eventTime, userData = {}, customData = {}, eventSourceUrl }) {
+  const payload = {
+    data: [{
+      event_name: eventName,
+      event_time: eventTime || Math.floor(Date.now() / 1000),
+      event_source_url: eventSourceUrl,
+      action_source: 'website',
+      user_data: {
+        em: userData.email ? hashData(userData.email) : undefined,
+        ph: userData.phone ? hashData(userData.phone) : undefined,
+        client_ip_address: userData.ip,
+        client_user_agent: userData.userAgent,
+        fbp: userData.fbp,
+        fbc: userData.fbc,
+      },
+      custom_data: customData,
+    }],
+  };
+
+  return new Promise((resolve, reject) => {
+    const body = JSON.stringify(payload);
+    const req = https.request({
+      hostname: 'graph.facebook.com',
+      path: `/${API_VERSION}/${PIXEL_ID}/events?access_token=${ACCESS_TOKEN}`,
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Content-Length': Buffer.byteLength(body) },
+    }, (res) => {
+      let data = '';
+      res.on('data', chunk => data += chunk);
+      res.on('end', () => resolve(JSON.parse(data)));
+    });
+    req.on('error', reject);
+    req.write(body);
+    req.end();
+  });
+}
+
+module.exports = { sendEvent };
+```
+
+Usage in conversion route (e.g. routes/checkout.js):
+```javascript
+const { sendEvent } = require('../lib/meta_capi');
+// After successful payment:
+await sendEvent({
+  eventName: 'Purchase',
+  userData: { email: req.user.email, ip: req.ip, userAgent: req.headers['user-agent'] },
+  customData: { currency: 'USD', value: order.total },
+  eventSourceUrl: req.headers.referer,
+});
+```
+
+Environment variables to add (.env):
+  META_PIXEL_ID=<pixel_id>
+  META_CAPI_TOKEN=<capi_access_token>
+
+---
+
+### Pattern B — Python / Flask
+
+Install: pip install facebook-business
+Or without SDK: use requests library (already available)
+
+File to create: meta_capi.py (in project root or app/integrations/)
+
+```python
+# meta_capi.py — Meta Conversions API helper
+import hashlib
+import time
+import os
+import requests
+
+PIXEL_ID = os.environ.get("META_PIXEL_ID", "")
+ACCESS_TOKEN = os.environ.get("META_CAPI_TOKEN", "")
+API_VERSION = "v25.0"
+ENDPOINT = f"https://graph.facebook.com/{API_VERSION}/{PIXEL_ID}/events"
+
+
+def _hash(value: str) -> str:
+    if not value:
+        return ""
+    return hashlib.sha256(value.strip().lower().encode()).hexdigest()
+
+
+def send_event(
+    event_name: str,
+    user_data: dict = None,
+    custom_data: dict = None,
+    event_source_url: str = "",
+    event_time: int = None,
+) -> dict:
+    user_data = user_data or {}
+    custom_data = custom_data or {}
+    payload = {
+        "data": [{
+            "event_name": event_name,
+            "event_time": event_time or int(time.time()),
+            "event_source_url": event_source_url,
+            "action_source": "website",
+            "user_data": {
+                k: v for k, v in {
+                    "em": _hash(user_data.get("email", "")),
+                    "ph": _hash(user_data.get("phone", "")),
+                    "client_ip_address": user_data.get("ip"),
+                    "client_user_agent": user_data.get("user_agent"),
+                    "fbp": user_data.get("fbp"),
+                    "fbc": user_data.get("fbc"),
+                }.items() if v
+            },
+            "custom_data": custom_data,
+        }],
+        "access_token": ACCESS_TOKEN,
+    }
+    try:
+        resp = requests.post(ENDPOINT, json=payload, timeout=10)
+        return resp.json()
+    except Exception as e:
+        return {"error": str(e)}
+```
+
+Usage in Flask view:
+```python
+from meta_capi import send_event
+# After successful payment:
+send_event(
+    "Purchase",
+    user_data={"email": current_user.email, "ip": request.remote_addr,
+               "user_agent": request.user_agent.string},
+    custom_data={"currency": "USD", "value": float(order.total)},
+    event_source_url=request.referrer,
+)
+```
+
+Environment variables (.env):
+  META_PIXEL_ID=<pixel_id>
+  META_CAPI_TOKEN=<capi_access_token>
+
+---
+
+### Pattern C — PHP / Laravel
+
+Install: composer require facebook/php-business-sdk
+Or without SDK: use Guzzle or curl
+
+File to create: app/Services/MetaCapi.php
+
+```php
+<?php
+// app/Services/MetaCapi.php — Meta Conversions API helper
+namespace App\Services;
+
+class MetaCapi
+{
+    private string $pixelId;
+    private string $accessToken;
+    private string $apiVersion = 'v25.0';
+
+    public function __construct()
+    {
+        $this->pixelId = env('META_PIXEL_ID', '');
+        $this->accessToken = env('META_CAPI_TOKEN', '');
+    }
+
+    private function hash(string $value): string
+    {
+        return hash('sha256', strtolower(trim($value)));
+    }
+
+    public function sendEvent(string $eventName, array $userData = [], array $customData = [], string $eventSourceUrl = ''): array
+    {
+        $payload = [
+            'data' => [[
+                'event_name'       => $eventName,
+                'event_time'       => time(),
+                'event_source_url' => $eventSourceUrl,
+                'action_source'    => 'website',
+                'user_data'        => array_filter([
+                    'em'                  => !empty($userData['email']) ? $this->hash($userData['email']) : null,
+                    'ph'                  => !empty($userData['phone']) ? $this->hash($userData['phone']) : null,
+                    'client_ip_address'   => $userData['ip'] ?? null,
+                    'client_user_agent'   => $userData['user_agent'] ?? null,
+                    'fbp'                 => $userData['fbp'] ?? null,
+                    'fbc'                 => $userData['fbc'] ?? null,
+                ]),
+                'custom_data' => $customData,
+            ]],
+            'access_token' => $this->accessToken,
+        ];
+
+        $ch = curl_init("https://graph.facebook.com/{$this->apiVersion}/{$this->pixelId}/events");
+        curl_setopt_array($ch, [
+            CURLOPT_POST => true,
+            CURLOPT_POSTFIELDS => json_encode($payload),
+            CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT => 10,
+        ]);
+        $result = curl_exec($ch);
+        curl_close($ch);
+        return json_decode($result, true) ?? [];
+    }
+}
+```
+
+Usage in controller:
+```php
+use App\Services\MetaCapi;
+// After payment:
+(new MetaCapi())->sendEvent('Purchase',
+    ['email' => $user->email, 'ip' => request()->ip(), 'user_agent' => request()->userAgent()],
+    ['currency' => 'USD', 'value' => $order->total],
+    url()->previous()
+);
+```
+
+.env additions:
+  META_PIXEL_ID=<pixel_id>
+  META_CAPI_TOKEN=<capi_access_token>
+
+---
+
+### Branch and PR naming
+
+Branch: capi-integration
+Commit message: "feat: add Meta Conversions API (CAPI) server-side event tracking"
+PR title: "Add Meta CAPI for server-side conversion tracking"
+PR body: "Adds server-side event sending to Meta Conversions API using pixel {pixel_id}.
+Requires environment variables: META_PIXEL_ID and META_CAPI_TOKEN.
+See Meta Events Manager for verification after deployment."
+
+---
+
+### GitHub API — create PR
+
+POST /repos/{owner}/{repo}/pulls
+Headers: Authorization: Bearer {github_token}
+Body:
+{
+  "title": "Add Meta CAPI for server-side conversion tracking",
+  "head": "capi-integration",
+  "base": "main",
+  "body": "..."
+}
+Returns: {"html_url": "https://github.com/{owner}/{repo}/pull/{N}"}

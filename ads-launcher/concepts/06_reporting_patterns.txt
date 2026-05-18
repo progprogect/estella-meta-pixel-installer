@@ -1,0 +1,174 @@
+## REPORTING PATTERNS — Metrics, Formulas, and Report Structure
+
+### Core Metrics
+
+| Metric | Formula | Good Range |
+|---|---|---|
+| CTR | clicks / impressions * 100 | > 1.0% (feed), > 0.5% (overall) |
+| CPC | spend / clicks | depends on niche; compare to industry avg |
+| CPM | spend / impressions * 1000 | $5–$20 (RU/CIS), $10–$50 (US/EU) |
+| CPA | spend / conversions | set by user as target_cpa |
+| ROAS | revenue / spend | > 3.0x healthy; > 1.0x profitable |
+| Frequency | impressions / reach | 1.5–3.0 ideal; > 4.0 = fatigue |
+| Conversion Rate | conversions / clicks * 100 | 1–5% typical |
+
+---
+
+### Daily Report Template
+
+```
+DAILY PERFORMANCE REPORT — {date}
+
+CAMPAIGN: {campaign_name} ({campaign_id})
+STATUS: {learning_status_summary}
+
+OVERVIEW (last 24h):
+  Spend:       ${spend}
+  Impressions: {impressions} (Reach: {reach}, Frequency: {frequency:.1f}x)
+  Clicks:      {clicks} (CTR: {ctr:.2f}%)
+  Conversions: {conversions}
+  CPA:         ${cpa:.2f} (target: ${target_cpa})
+  ROAS:        {roas:.1f}x
+
+AD SET BREAKDOWN:
+  ┌─────────────────────────┬──────────┬──────────┬──────────┬─────────────────┐
+  │ Ad Set                  │  Spend   │  Conv.   │   CPA    │ Learning Status │
+  ├─────────────────────────┼──────────┼──────────┼──────────┼─────────────────┤
+  │ Cold — Interests        │ ${spend} │    {n}   │ ${cpa}   │ {status}        │
+  │ Warm — Retargeting      │ ${spend} │    {n}   │ ${cpa}   │ {status}        │
+  │ Lookalike 1%            │ ${spend} │    {n}   │ ${cpa}   │ {status}        │
+  └─────────────────────────┴──────────┴──────────┴──────────┴─────────────────┘
+
+PIXEL LEARNING:
+  Total events this week: {total_events}/50 (learning exit threshold)
+  Progress to 100 events: {total_events}/100
+
+RECOMMENDATIONS:
+  {recommendation_text}
+
+Next check in 6 hours. Next report tomorrow at this time.
+```
+
+---
+
+### Final Report Template
+
+```
+FINAL CAMPAIGN REPORT — {start_date} to {end_date}
+
+CAMPAIGN SUMMARY
+  Campaign: {campaign_name}
+  Duration: {days} days
+  Total Spend: ${total_spend}
+  Total Conversions: {total_conversions}
+  Overall CPA: ${overall_cpa:.2f}
+  Overall ROAS: {overall_roas:.1f}x
+
+PIXEL LEARNING RESULTS
+  Learning phase: {COMPLETED|IN_PROGRESS|FAILED}
+  Total optimization events: {total_events}
+  Events this week: {events_this_week}
+  Recommendation: {learning_recommendation}
+
+AD SET PERFORMANCE RANKING
+  1. {best_adset_name}: ${cpa} CPA, {conv} conversions, {roas}x ROAS ← SCALE
+  2. {mid_adset_name}: ${cpa} CPA, {conv} conversions — MAINTAIN
+  3. {low_adset_name}: ${cpa} CPA, {conv} conversions ← PAUSE
+
+TOP PERFORMING AD
+  Creative: {ad_name}
+  CTR: {ctr}% | CPC: ${cpc} | Conversions: {conv}
+
+SCALING RECOMMENDATIONS
+  Immediate actions:
+    ✓ Scale "{best_adset}" budget by +20% (from ${current} to ${new}/day)
+    ✓ Pause "{low_adset}" — CPA {times}x above target
+    ✓ Duplicate best ad set with broader audience
+
+  Next 2 weeks:
+    • Test new creative for top ad set
+    • Expand lookalike to 2-3% ratio if 1% performing well
+    • Consider expanding to additional countries
+
+  If ROAS < 1.0x:
+    • Review landing page conversion rate
+    • A/B test ad copy with different value proposition
+    • Consider lower funnel optimization event (add_to_cart instead of purchase)
+
+CAPI STATUS
+  Server-side events: {ACTIVE|NOT_CONFIGURED}
+  Event Match Quality: {score}/10
+  Deduplication rate: {pct}%
+```
+
+---
+
+### Recommendation Logic
+
+```python
+def generate_recommendations(adsets_data, campaign_data, target_cpa):
+    recs = []
+    for adset in adsets_data:
+        cpa = adset.get("cpa", 0)
+        spend = adset.get("spend", 0)
+        conv = adset.get("conversions", 0)
+        learning = adset.get("learning_status", "")
+
+        if learning == "FAIL":
+            recs.append(f"PAUSE {adset['name']}: learning phase failed (not enough events). "
+                        "Increase budget or broaden targeting.")
+        elif cpa > target_cpa * 2 and spend > 50:
+            recs.append(f"PAUSE {adset['name']}: CPA ${cpa:.0f} is {cpa/target_cpa:.1f}x target.")
+        elif cpa < target_cpa * 0.8 and conv >= 10:
+            recs.append(f"SCALE {adset['name']}: CPA ${cpa:.0f} is below target. "
+                        "Increase budget by 20%.")
+        elif learning == "LEARNING" and conv < 10 and spend > 30:
+            recs.append(f"MONITOR {adset['name']}: still learning ({conv}/50 events). "
+                        "Do not make changes yet.")
+
+    if not recs:
+        recs.append("All ad sets are within target. Continue monitoring.")
+
+    return "\n  ".join(recs)
+```
+
+---
+
+### Metrics Extraction from Insights API Response
+
+```python
+def parse_insights(data):
+    result = {
+        "spend": float(data.get("spend", 0)),
+        "impressions": int(data.get("impressions", 0)),
+        "clicks": int(data.get("clicks", 0)),
+        "reach": int(data.get("reach", 0)),
+        "cpm": float(data.get("cpm", 0)),
+        "cpc": float(data.get("cpc", 0)),
+        "ctr": float(data.get("ctr", 0)),
+        "frequency": float(data.get("frequency", 0)),
+        "conversions": 0,
+        "conversion_value": 0.0,
+    }
+    goal_action_map = {
+        "purchase": "offsite_conversion.fb_pixel_purchase",
+        "lead": "offsite_conversion.fb_pixel_lead",
+        "complete_registration": "offsite_conversion.fb_pixel_complete_registration",
+        "app_install": "mobile_app_install",
+    }
+    for action in data.get("actions", []):
+        if action["action_type"] in goal_action_map.values():
+            result["conversions"] += int(float(action.get("value", 0)))
+    for av in data.get("action_values", []):
+        if av["action_type"] == goal_action_map.get("purchase"):
+            result["conversion_value"] += float(av.get("value", 0))
+    if result["conversions"] > 0:
+        result["cpa"] = result["spend"] / result["conversions"]
+    else:
+        result["cpa"] = 0
+    if result["spend"] > 0:
+        result["roas"] = result["conversion_value"] / result["spend"]
+    else:
+        result["roas"] = 0
+    return result
+```

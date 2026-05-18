@@ -1,0 +1,132 @@
+## PIXEL LEARNING PHASE — Monitoring and Thresholds
+
+### What is the Learning Phase
+When an ad set is first created or significantly changed, Meta's delivery system enters a
+"learning phase" where it optimizes delivery based on your goal. During this period
+performance is less predictable and CPAs may be higher.
+
+Exit condition: 50 optimization events per week (within a rolling 7-day window).
+The user requested tracking until 100 events — this ensures the pixel is fully trained.
+
+---
+
+### API Field: learning_stage_info
+
+GET /{adset_id}?fields=learning_stage_info,effective_status,insights{conversions}
+Access token required in params.
+
+Response fields:
+  learning_stage_info.status:
+    "LEARNING"  — currently in learning phase (< 50 events/week)
+    "SUCCESS"   — exited learning phase successfully (≥ 50 events/week)
+    "FAIL"      — learning limited (not enough events, budget too low)
+    null        — not returned for paused or brand new ad sets
+
+  learning_stage_info.conversions: N  — conversion count during current learning window
+  learning_stage_info.last_sig_edit_ts — timestamp when learning last restarted
+
+  effective_status:
+    "ACTIVE", "PAUSED", "DELETED", "PENDING_REVIEW",
+    "DISAPPROVED", "PREAPPROVED", "PENDING_BILLING_INFO",
+    "CAMPAIGN_PAUSED", "ARCHIVED", "ADSET_PAUSED", "IN_PROCESS",
+    "WITH_ISSUES"
+
+---
+
+### API: Campaign Insights
+
+GET /{campaign_id}/insights
+Params:
+  fields: spend,impressions,clicks,actions,cost_per_action_type,
+          reach,frequency,cpm,cpc,ctr,cpp
+  date_preset: today | yesterday | last_7d | last_14d | last_30d
+  time_range: {"since": "2024-01-01", "until": "2024-01-31"}  (alternative)
+  level: campaign | adset | ad  (default: campaign)
+
+Key fields explained:
+  spend             — total amount spent (string, currency of account)
+  impressions       — number of times ads were shown
+  clicks            — link clicks
+  reach             — unique users reached
+  frequency         — impressions / reach (ideal: 1.5–3.0; >4.0 is audience fatigue)
+  cpm               — cost per 1000 impressions
+  cpc               — cost per click
+  ctr               — click-through rate (%)
+  actions           — list of {action_type, value} for all tracked actions
+  cost_per_action_type — list of {action_type, value} for CPA by action type
+
+Important action_types:
+  "offsite_conversion.fb_pixel_purchase"       — purchases
+  "offsite_conversion.fb_pixel_lead"           — leads
+  "offsite_conversion.fb_pixel_complete_registration" — registrations
+  "link_click"                                 — link clicks
+  "post_engagement"                            — likes + comments + shares
+
+Extracting conversion count from actions:
+  for action in actions:
+    if action["action_type"] == "offsite_conversion.fb_pixel_purchase":
+      conversions = int(action["value"])
+
+ROAS calculation:
+  purchase_value = sum of offsite_conversion.fb_pixel_purchase values (from action_values field)
+  ROAS = purchase_value / spend
+
+---
+
+### Monitoring Daemon Logic (6-hour polling cycle)
+
+```
+Every 6 hours:
+  1. For each adset_id in adset_ids:
+     GET /{adset_id}?fields=learning_stage_info,effective_status,insights{conversions}
+     Record: learning_status, conversions_in_window, effective_status
+
+  2. GET /{campaign_id}/insights?fields=spend,impressions,actions,cost_per_action_type&date_preset=last_7d
+     Record: total_spend, total_conversions, cpa
+
+  3. Update KV key ads_monitor_state with JSON snapshot
+
+  4. Check milestones:
+     - total_conversions >= 100 → trigger ads_report_final
+     - total_conversions >= 50 AND last_daily_report > 24h ago → trigger ads_report_daily
+     - days_running >= 7 AND total_conversions < 100 → trigger ads_report_final (timeout)
+     - any adset.learning_status == "FAIL" → append warning to state, trigger report
+
+  5. Check daily cadence (once per 24h):
+     - trigger ads_report_daily regardless of conversion count
+```
+
+---
+
+### Significant Edits (trigger new learning phase)
+
+Actions that RESTART learning phase:
+  - Changing targeting (interests, custom audiences)
+  - Changing optimization goal
+  - Changing bidding strategy or bid amount
+  - Adding or removing ad creatives
+  - Pausing ad set for >7 days then reactivating
+  - Increasing budget by more than 20%
+  - Changing promoted object (pixel ID, conversion event type)
+
+Actions that do NOT restart learning:
+  - Renaming campaign/ad set
+  - Increasing budget by ≤20%
+  - Adding a new ad while keeping existing ones active (test with caution)
+  - Changing ad copy (pausing old ad, activating new one does restart)
+
+---
+
+### Thresholds and Decision Points
+
+| Metric | Action |
+|---|---|
+| learning_status = LEARNING, conversions < 20, days > 5 | Increase budget or broaden targeting |
+| learning_status = FAIL | Pause ad set, redistribute budget |
+| learning_status = SUCCESS | Campaign performing normally, monitor CPA |
+| CPA > 2x target_cpa | Pause ad set, review creative or targeting |
+| CPA < 0.8x target_cpa | Eligible for budget scale-up (≤20% at a time) |
+| frequency > 4.0 | Audience fatigue — expand audience or refresh creative |
+| CTR < 0.5% | Creative underperforming — suggest new creative |
+| 100 conversions reached | Trigger final report |
+| 7 days elapsed without 100 conv | Trigger final report with partial data |

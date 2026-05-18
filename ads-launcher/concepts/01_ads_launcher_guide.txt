@@ -1,0 +1,157 @@
+## ADS LAUNCHER PRESET — Master Guide
+
+### What This Preset Does
+Fully automates Meta (Facebook) ad campaign creation and management from scratch.
+Given a product description, target audience, creatives, budget, and conversion goal,
+the system: integrates CAPI into the website backend via Git, builds targeting audiences,
+creates campaign structure (Campaign → Ad Sets → Ads), launches campaigns, monitors
+pixel learning, delivers daily/weekly performance reports, and generates a final report
+with scaling recommendations.
+
+---
+
+### PREREQUISITES
+- Graph API token with ads_management + business_management scopes (already available)
+- Ad account ID (act_XXXXXXXXXX format)
+- Pixel ID (from pixel-installer preset or existing)
+- Git repository URL of the website backend (for CAPI integration)
+- Device UUID in KV (extella_device_uuid) — for local experts
+- Ad creatives: image URLs or local file paths (minimum 1 image)
+
+---
+
+### AGENT WORKFLOW — Follow These Steps Exactly
+
+**STEP 0 — Collect and validate all inputs**
+Call expert: `ads_intake`
+- Params: all user-provided info as keyword arguments
+- The expert saves everything to KV and returns `{status: "ready"}` or `{status: "needs_input", missing: [...]}`
+- If needs_input: ask user for each missing item specifically, then re-run ads_intake
+- Required fields: product_info, audience_desc, budget_daily, conversion_goal, ad_account_id, meta_token
+- Optional but strongly recommended: git_repo_url (CAPI), creatives
+
+**STEP 1 — Integrate Conversions API (CAPI) into website backend**
+Call expert: `ads_capi_git_install` LOCALLY (target = extella_device_uuid)
+- Params: api_token, base_url, repo_url (from KV ads_git_repo_url), pixel_id, capi_token, device_uuid
+- The expert clones the repo, detects the tech stack, generates server-side event code, creates a branch and PR
+- Returns: `{status: "success", pr_url: "...", branch: "capi-integration", stack: "node|python|php"}`
+- Show user: "I've created a pull request with CAPI integration: {pr_url}"
+- Ask: "Please review and merge the PR, then confirm here so I can continue."
+- Wait for user confirmation before proceeding to STEP 2
+- If git_repo_url not provided: skip STEP 1, note that CAPI will not be active
+
+**STEP 2 — Build targeting audiences**
+Call expert: `ads_audience_builder`
+- Params: api_token, base_url, meta_token, ad_account_id, pixel_id, audience_desc, conversion_goal
+- Builds three targeting segments: Cold (interests), Warm (pixel retargeting), Lookalike (1-3%)
+- Returns: `{targeting_specs: [{type, name, targeting_json}, ...], audience_summaries: [...]}`
+- Show user the 3 audience summaries and ask: "Do these audiences look right? Reply yes to continue or describe changes."
+
+**STEP 3 — Upload ad creatives**
+Call expert: `ads_creative_upload`
+- Params: api_token, base_url, meta_token, ad_account_id, creatives_json, ad_copy, headline, link_url, call_to_action
+- Returns: `{creative_ids: [...], creative_previews: [...]}`
+- Show user preview URLs and confirm
+
+**STEP 4 — Create campaign structure (paused)**
+Call expert: `ads_campaign_create`
+- Params: api_token, base_url, meta_token, ad_account_id, pixel_id, conversion_goal, budget_daily, targeting_specs_json, creative_ids_json, campaign_name, device_uuid
+- Creates: 1 Campaign + 3 Ad Sets (cold/warm/lookalike in parallel) + Ads — all PAUSED
+- Returns: `{campaign_id, adset_ids, ad_ids, structure_summary}`
+- Show user the full campaign structure with budgets and audiences
+- Ask: "Everything looks good? Reply YES to launch the campaigns."
+
+**STEP 5 — Launch campaigns and start monitoring**
+After user confirms:
+1. Call `ads_optimizer` with action="unpause" to activate all ad sets
+2. Call expert: `ads_monitor` LOCALLY (target = extella_device_uuid) with nohup
+   - Params: api_token, base_url, meta_token, campaign_id, adset_ids_json, target_cpa, conversion_goal
+   - Returns: `{pid, log_file}` immediately
+3. Tell user: "Campaigns are live! I'm monitoring performance every 6 hours.
+   I'll send you daily reports and alert you when we reach 50 and 100 conversion events."
+
+**STEP 6 — Daily reports and optimization**
+The monitoring daemon calls `ads_report_daily` automatically every 24 hours.
+When you receive a daily report (the agent will notify you), relay it to the user in this format:
+
+```
+📊 Daily Performance Report — {date}
+
+Spend today: ${spend}
+Impressions: {impressions} | CTR: {ctr}% | CPC: ${cpc}
+Conversions: {conversions} | CPA: ${cpa}
+
+Ad Set Performance:
+  Cold audience:    {N} conv / ${cpa_cold} CPA — {learning_status}
+  Warm retargeting: {N} conv / ${cpa_warm} CPA — {learning_status}
+  Lookalike:        {N} conv / ${cpa_look} CPA — {learning_status}
+
+Pixel learning: {N}/50 events this week
+
+Recommendation: {recommendation}
+```
+
+If the optimizer recommends action, ask user for approval, then call `ads_optimizer`.
+
+**STEP 7 — Final report**
+Triggered automatically by the monitor when 100 conversions reached OR 7 days elapsed.
+Call expert: `ads_report_final`
+- Returns full analysis: ROAS, top performing ad sets, pixel learning completion, recommendations
+- Present to user with scaling suggestions
+
+---
+
+### EXPERT LIST
+
+| Expert | CSPL | Run Mode | Purpose |
+|---|---|---|---|
+| ads_intake | fython | serverless | Validate inputs, save to KV |
+| ads_git_clone | shell | LOCAL | Clone Git repository |
+| ads_git_commit_push | shell | LOCAL | Create branch, commit, push |
+| ads_capi_git_install | fython | LOCAL | Detect stack, generate CAPI code, create PR |
+| ads_audience_builder | fython | serverless | Build 3 targeting specs via AI interest mapping |
+| ads_creative_upload | fython | serverless | Upload images, create ad creatives |
+| ads_adset_worker | parallel_task | serverless | Create one ad set + ads (called in parallel x3) |
+| ads_campaign_create | fython | serverless | Campaign orchestrator, fan-out via parallel_task |
+| ads_monitor | nohup | LOCAL | Background 6h polling daemon |
+| ads_report_daily | fython | serverless | Daily metrics report |
+| ads_report_final | fython | serverless | Final campaign analysis and recommendations |
+| ads_optimizer | fython | serverless | Pause underperformers, scale winners |
+| ads_pipeline | fython | serverless | Full end-to-end orchestrator |
+
+---
+
+### KEY KV STORE KEYS
+
+| Key | Description |
+|---|---|
+| extella_device_uuid | Local device UUID (required for LOCAL experts) |
+| ads_meta_token | Graph API token with ads_management scope |
+| ads_ad_account_id | Ad account ID (act_XXXXXXXXXX) |
+| ads_pixel_id | Meta Pixel / Dataset ID |
+| ads_capi_token | CAPI access token for server-side events |
+| ads_product_info | Product/service description |
+| ads_audience_desc | Target audience description |
+| ads_offers | Key messages and offers |
+| ads_budget_daily | Daily budget in USD |
+| ads_conversion_goal | purchase / lead / complete_registration / app_install |
+| ads_target_cpa | Target cost-per-action (USD) |
+| ads_git_repo_url | Website/app repository URL for CAPI integration |
+| ads_campaign_id | Created campaign ID |
+| ads_adset_ids | JSON array of ad set IDs |
+| ads_ad_ids | JSON array of ad IDs |
+| ads_monitor_pid | PID of the monitoring daemon |
+| ads_monitor_state | JSON with last check timestamp, conversion counts, learning status |
+
+---
+
+### HANDLING FAILURES
+
+- **ads_intake needs_input**: ask user for each missing field specifically; re-run until status=ready
+- **ads_capi_git_install fails**: show error; proceed without CAPI if user agrees; note reduced tracking accuracy
+- **ads_audience_builder fails**: ask user to describe audience more specifically; retry
+- **ads_creative_upload fails**: check image format (JPEG/PNG, min 600x315px); ask user for alternative
+- **ads_campaign_create fails**: check token has ads_management scope; verify ad_account_id format
+- **ads_monitor fails to start**: verify device_uuid is set and Extella Desktop is running
+- **Learning phase FAIL**: notify user; suggest increasing budget or broadening targeting; call ads_optimizer
+- Always explain issues in plain language — users may not be technical

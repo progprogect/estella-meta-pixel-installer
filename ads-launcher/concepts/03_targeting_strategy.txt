@@ -1,0 +1,137 @@
+## META ADS TARGETING STRATEGY — Cold / Warm / Lookalike
+
+### Targeting Spec Object (Meta API format)
+
+```json
+{
+  "age_min": 18,
+  "age_max": 65,
+  "genders": [1, 2],
+  "geo_locations": {
+    "countries": ["RU"],
+    "location_types": ["home", "recent"]
+  },
+  "interests": [
+    {"id": "6003107902433", "name": "Fitness and wellness"}
+  ],
+  "publisher_platforms": ["facebook", "instagram"],
+  "facebook_positions": ["feed", "story"],
+  "instagram_positions": ["stream", "story"]
+}
+```
+
+---
+
+### Segment 1 — Cold (Interest Targeting)
+
+Use when: reaching new users who have never visited the site
+Build via: ads_audience_builder which calls AI agent to map audience description to interest IDs
+
+How AI mapping works:
+  Input: free-text audience description (e.g. "young mothers 25-40 interested in healthy food")
+  Output: list of Meta interest category objects with {id, name, audience_size_lower_bound}
+  The agent calls Meta targeting search API to validate IDs:
+    GET /search?type=adinterest&q={keyword}&access_token={token}
+    Returns: [{id, name, audience_size_lower_bound, audience_size_upper_bound, path}]
+
+Targeting spec:
+  interests: AI-generated interest list (aim for 3-8 interests, combined size 500k-10M)
+  age_min / age_max: inferred from audience description
+  genders: [1] male only, [2] female only, [1,2] all
+  geo_locations: from user input (default: "RU" for Russia)
+  Budget: 40% of daily total
+
+---
+
+### Segment 2 — Warm (Pixel Retargeting)
+
+Use when: re-engaging users who visited the site but did not convert
+
+Requires Custom Audience from pixel events:
+  POST /act_{ad_account_id}/customaudiences
+  {
+    "name": "Website Visitors 180d — [product]",
+    "subtype": "WEBSITE",
+    "retention_days": 180,
+    "rule": {"inclusions": {"operator": "or", "rules": [
+      {"event_sources": [{"id": "{pixel_id}", "type": "pixel"}],
+       "retention_seconds": 15552000,
+       "filter": {"operator": "and", "filters": [
+         {"field": "event", "operator": "=", "value": "PageView"}
+       ]}}
+    ]}},
+    "access_token": token
+  }
+  Returns: {"id": "{custom_audience_id}"}
+
+Targeting spec:
+  custom_audiences: [{"id": "{custom_audience_id}"}]
+  excluded: converter audience (people who already converted)
+  Budget: 30% of daily total
+
+Notes:
+  - Custom audience needs ~1000 users minimum to be active
+  - If pixel is new and has <1000 users: skip warm segment, redistribute budget to cold/lookalike
+
+---
+
+### Segment 3 — Lookalike
+
+Use when: scaling by finding users similar to existing converters
+
+Source audience: pixel purchasers / leads (last 180 days)
+  POST /act_{ad_account_id}/customaudiences
+  subtype: "LOOKALIKE"
+  origin_audience_id: converter custom audience ID
+  lookalike_spec: {"ratio": 0.01, "country": "RU"}
+  ratio: 0.01 = top 1% most similar (best performance, smallest)
+         0.03 = top 3% (good balance)
+         0.05 = top 5% (larger reach, less precise)
+
+Targeting spec:
+  custom_audiences: [{"id": "{lookalike_audience_id}"}]
+  Budget: 30% of daily total
+
+Notes:
+  - Lookalike requires source audience with min 100 users; ideally 1000+
+  - If converters < 100: use interest targeting for all 3 ad sets with slight variation
+  - Lookalike audience: estimated 200k-2M users depending on country + ratio
+
+---
+
+### Default Placements
+
+For best results in learning phase, use Advantage+ placements (Meta's automatic placement):
+  "device_platforms": ["mobile", "desktop"],
+  "publisher_platforms": ["facebook", "instagram", "audience_network"],
+  Do NOT restrict placements during learning phase — let Meta optimize
+
+Manual placements (use only if brand safety is critical):
+  facebook: ["feed", "story", "reels"]
+  instagram: ["stream", "story", "reels"]
+
+---
+
+### Geo Targeting by Market
+
+Russia / CIS:
+  geo_locations: {"countries": ["RU", "KZ", "UA", "BY"]}
+
+Global (EN):
+  geo_locations: {"countries": ["US", "GB", "CA", "AU"]}
+
+EU:
+  geo_locations: {"country_groups": ["eea"]}
+
+---
+
+### Audience Size Guidelines
+
+| Size | Verdict |
+|---|---|
+| < 50k | Too small — learning phase struggles |
+| 50k – 500k | Good for niche products |
+| 500k – 5M | Ideal for most campaigns |
+| > 5M | Fine for awareness; conversion campaigns may lose focus |
+
+If cold audience size < 100k: broaden interests or raise age range.

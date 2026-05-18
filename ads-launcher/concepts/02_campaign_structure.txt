@@ -1,0 +1,150 @@
+## META ADS CAMPAIGN STRUCTURE — API Patterns v25.0
+
+### Hierarchy
+Campaign → Ad Sets (3) → Ads (1-2 per Ad Set)
+
+---
+
+### 1. Campaign Creation
+
+POST /act_{ad_account_id}/campaigns
+Required fields:
+  name          — human-readable label
+  objective     — see Objectives table below
+  status        — PAUSED (always create paused, unpause after review)
+  special_ad_categories — [] (empty unless credit/housing/employment/social issues)
+  access_token  — user or system user token
+
+Objectives by conversion goal:
+  purchase / lead / registration → OUTCOME_SALES
+  app_install                   → OUTCOME_APP_PROMOTION
+  awareness only                → OUTCOME_AWARENESS
+  traffic                       → OUTCOME_TRAFFIC
+
+Budget options (mutually exclusive):
+  daily_budget  — in account currency cents (e.g. $50/day = 5000)
+  lifetime_budget + end_time
+  NOTE: if using CBO (campaign budget optimization) set budget at campaign level;
+        if ABO (ad set budget optimization) set budget per ad set
+
+Response: {"id": "{campaign_id}"}
+
+---
+
+### 2. Ad Set Creation
+
+POST /act_{ad_account_id}/adsets
+Required fields:
+  name              — e.g. "Cold — Interests — [product]"
+  campaign_id       — from step 1
+  billing_event     — IMPRESSIONS (standard)
+  optimization_goal — see table below
+  promoted_object   — {pixel_id, custom_event_type} or {application_id, object_store_url}
+  targeting         — targeting spec object (see concept 03)
+  status            — PAUSED
+  start_time        — ISO8601 (use current time + 10 min)
+  access_token
+
+Budget (ABO mode):
+  daily_budget — cents, or
+  lifetime_budget + end_time
+
+Optimization goals by conversion_goal:
+  purchase              → OFFSITE_CONVERSIONS, custom_event_type: PURCHASE
+  lead                  → LEAD_GENERATION or OFFSITE_CONVERSIONS + LEAD
+  complete_registration → OFFSITE_CONVERSIONS, custom_event_type: COMPLETE_REGISTRATION
+  app_install           → APP_INSTALLS
+
+Bid strategy (optional, defaults to LOWEST_COST_WITHOUT_CAP):
+  bid_strategy: LOWEST_COST_WITH_BID_CAP  — set bid_amount (cents) for target CPA
+  bid_strategy: COST_CAP                  — set bid_amount for cost cap
+
+Response: {"id": "{adset_id}"}
+
+Check learning phase:
+  GET /{adset_id}?fields=learning_stage_info,effective_status
+  learning_stage_info.status: "LEARNING" | "SUCCESS" | "FAIL"
+  learning_stage_info.conversions: N (conversions so far in learning window)
+
+---
+
+### 3. Ad Creative Creation
+
+POST /act_{ad_account_id}/adcreatives
+Fields:
+  name              — label
+  object_story_spec:
+    page_id         — Facebook Page ID (required for all ad formats)
+    link_data:
+      message       — primary ad copy (up to 125 chars recommended)
+      link          — destination URL
+      image_hash    — from adimages upload
+      name          — headline (up to 40 chars)
+      description   — description text (optional)
+      call_to_action: {type: "LEARN_MORE"|"SHOP_NOW"|"SIGN_UP"|"DOWNLOAD", value: {link}}
+  access_token
+
+Image upload first:
+  POST /act_{ad_account_id}/adimages
+  multipart/form-data with file field OR
+  JSON: {"bytes": "<base64_encoded_image>"}
+  Response: {"images": {"<filename>": {"hash": "<image_hash>", ...}}}
+  Image requirements: JPEG or PNG, min 600x315px, max 30MB
+
+Response: {"id": "{creative_id}"}
+
+---
+
+### 4. Ad Creation
+
+POST /act_{ad_account_id}/ads
+Required fields:
+  name         — label
+  adset_id     — from step 2
+  creative     — {"creative_id": "{creative_id}"}
+  status       — PAUSED or ACTIVE
+  access_token
+
+Response: {"id": "{ad_id}"}
+
+---
+
+### 5. Unpausing (activating) campaigns
+
+To launch after user confirmation:
+  POST /{campaign_id}
+  {"status": "ACTIVE", "access_token": token}
+
+Or update individual ad sets:
+  POST /{adset_id}
+  {"status": "ACTIVE", "access_token": token}
+
+---
+
+### 6. Budget scaling
+
+Scale ad set budget +20%:
+  POST /{adset_id}
+  {"daily_budget": new_budget_cents, "access_token": token}
+
+NOTE: changing budget by >20% triggers a new learning phase.
+Keep budget changes ≤20% to avoid resetting learning.
+
+---
+
+### Standard 3 Ad Set Structure for Test Launch
+
+Ad Set 1 — Cold (Interests):
+  targeting: interests from audience builder
+  daily_budget: 40% of total daily budget
+  optimization_goal: OFFSITE_CONVERSIONS
+
+Ad Set 2 — Warm (Pixel Retargeting):
+  targeting: custom audience — website visitors last 180 days
+  daily_budget: 30% of total daily budget
+  optimization_goal: OFFSITE_CONVERSIONS
+
+Ad Set 3 — Lookalike:
+  targeting: lookalike_spec from pixel source audience, ratio: 0.01
+  daily_budget: 30% of total daily budget
+  optimization_goal: OFFSITE_CONVERSIONS
