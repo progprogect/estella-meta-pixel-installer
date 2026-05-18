@@ -29,7 +29,7 @@ def meta_pixel_create_headless(
     print("[1/5] Checking Playwright...")
 
     try:
-        from playwright.sync_api import sync_playwright, TimeoutError as PlaywrightTimeout
+        from playwright.sync_api import sync_playwright
     except ImportError:
         return {
             "status": "setup_required",
